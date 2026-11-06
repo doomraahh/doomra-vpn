@@ -15,9 +15,9 @@ namespace Luna {
   static bool Enabled(Dictionary<string,object> d,string key) { object v=Value(d,key); if(v==null) return false; Need(v is bool,"Неверный тип логического JSON-поля."); return (bool)v; }
   static object[] Items(object v) { Need(v is IEnumerable && !(v is string) && !(v is IDictionary),"Ожидается JSON-массив."); return ((IEnumerable)v).Cast<object>().ToArray(); }
   static Dictionary<string,object> Single(object v) { object[] items=Items(v); Need(items.Length==1,"Несколько адресов или пользователей в одном outbound не поддерживаются."); return Map(items[0]); }
-  static void Keys(Dictionary<string,object> d,string allowed,[System.Runtime.CompilerServices.CallerLineNumber] int location=0) {
+  static void Keys(Dictionary<string,object> d,string allowed,[System.Runtime.CompilerServices.CallerLineNumber] int location=0,string section=null) {
    var set=new HashSet<string>(allowed.Split(','));
-   Need(d.Keys.All(set.Contains),"Есть неподдерживаемые параметры JSON-сервера (код "+location+", содержимое скрыто).");
+   Need(d.Keys.All(set.Contains),"Есть неподдерживаемые параметры JSON-сервера ("+(section??"код "+location)+", содержимое скрыто).");
   }
   static void Note(ImportResult r,string note) { if(!r.Notes.Contains(note)) r.Notes.Add(note); }
   public static ImportResult Parse(string text) {
@@ -97,6 +97,7 @@ namespace Luna {
     Need(!Enabled(tls,"allowInsecure") && !Enabled(tls,"disableSystemRoot") && !Enabled(tls,"enableSessionResumption"),"Небезопасные или неподдерживаемые настройки TLS.");
     object certs=Value(tls,"certificates"); Need(certs==null || Items(certs).Length==0,"Собственные сертификаты JSON не поддерживаются.");
     s.Sni=Text(tls,"serverName"); s.Fingerprint=Text(tls,"fingerprint"); object alpn=Value(tls,"alpn"); if(alpn!=null) s.Alpn=Items(alpn).Select(x=> { Need(x is string,"Неверный ALPN."); return (string)x; }).ToArray();
+    if(hysteria && s.Fingerprint!="") { s.Fingerprint=""; Note(result,"TLS fingerprint Xray не переносится в Hysteria2/QUIC. Проверка сертификата остаётся включена."); }
    } else if(s.Security=="reality") {
     Need(Child(stream,"tlsSettings").Count==0,"TLS-параметры при режиме Reality не поддерживаются.");
     var reality=Child(stream,"realitySettings"); Keys(reality,"serverName,fingerprint,publicKey,password,shortId,spiderX,show");
@@ -111,12 +112,29 @@ namespace Luna {
     Need(Number(ws,"maxEarlyData")==0 && Text(ws,"earlyDataHeaderName")=="","WebSocket early data не поддерживается.");
     s.Path=Text(ws,"path"); var headers=Child(ws,"headers"); Need(headers.Count<=1 && headers.Keys.All(k=>k.Equals("Host",StringComparison.OrdinalIgnoreCase)),"Пользовательские или повторяющиеся заголовки WebSocket не поддерживаются."); if(headers.Count>0) { object host=headers.Values.First(); Need(host is string,"Неверный WebSocket Host."); s.TransportHost=(string)host; }
    } else Need(Child(stream,"wsSettings").Count==0,"WebSocket-параметры без WebSocket.");
-   if(network=="grpc") { var grpc=Child(stream,"grpcSettings"); Keys(grpc,"serviceName,multiMode"); Need(!Enabled(grpc,"multiMode"),"gRPC multiMode не поддерживается."); s.ServiceName=Text(grpc,"serviceName"); }
+   if(network=="grpc") {
+    var grpc=Child(stream,"grpcSettings"); Keys(grpc,"serviceName,multiMode,authority,user_agent,idle_timeout,health_check_timeout,permit_without_stream,initial_windows_size",section:"gRPC");
+    Need(!Enabled(grpc,"multiMode"),"gRPC multiMode не поддерживается.");
+    Need(Text(grpc,"authority")=="" && Text(grpc,"user_agent")=="" && Number(grpc,"initial_windows_size")<=0,"Пользовательские authority, user_agent или размер окна gRPC не поддерживаются.");
+    s.ServiceName=Text(grpc,"serviceName"); s.GrpcIdleSeconds=Number(grpc,"idle_timeout"); s.GrpcPingSeconds=Number(grpc,"health_check_timeout"); s.GrpcPermitWithoutStream=Enabled(grpc,"permit_without_stream");
+   }
    else Need(Child(stream,"grpcSettings").Count==0,"gRPC-параметры без gRPC.");
    if(network=="xhttp") {
     Need(Value(stream,"xhttpSettings")==null || Value(stream,"splithttpSettings")==null,"Повторяющиеся настройки XHTTP.");
     var xhttp=Value(stream,"xhttpSettings")!=null?Child(stream,"xhttpSettings"):Child(stream,"splithttpSettings");
-    Keys(xhttp,"host,path,mode"); s.TransportHost=Text(xhttp,"host"); s.Path=Text(xhttp,"path"); s.XhttpMode=Text(xhttp,"mode","auto");
+    const string tuning="xPaddingBytes,noGRPCHeader,scMaxEachPostBytes,scMinPostsIntervalMs,xmux,headers,noSSEHeader,scMaxBufferedPosts,scStreamUpServerSecs";
+    var extra=Child(xhttp,"extra");
+    Need(Value(xhttp,"downloadSettings")==null && Value(extra,"downloadSettings")==null,"XHTTP downloadSettings требует отдельного исходящего маршрута и пока не поддерживается.");
+    Keys(xhttp,"host,path,mode,extra,"+tuning,section:"XHTTP"); Keys(extra,tuning,section:"XHTTP extra");
+    foreach(var option in extra) {
+     Need(!xhttp.ContainsKey(option.Key),"Повторяющиеся параметры XHTTP.");
+     xhttp.Add(option.Key,option.Value);
+    }
+    s.TransportHost=Text(xhttp,"host"); s.Path=Text(xhttp,"path"); s.XhttpMode=Text(xhttp,"mode","auto");
+    s.XhttpPadding=Text(xhttp,"xPaddingBytes"); s.XhttpPostBytes=Text(xhttp,"scMaxEachPostBytes"); s.XhttpPostInterval=Text(xhttp,"scMinPostsIntervalMs"); s.XhttpNoGrpcHeader=Enabled(xhttp,"noGRPCHeader");
+    Need(Child(xhttp,"headers").Count==0,"Пользовательские заголовки XHTTP пока не поддерживаются.");
+    var muxOptions=Child(xhttp,"xmux");
+    foreach(string key in muxOptions.Keys.OrderBy(k=>k,StringComparer.Ordinal)) s.XhttpMux.Add(key,Text(muxOptions,key));
    } else Need(Child(stream,"xhttpSettings").Count==0 && Child(stream,"splithttpSettings").Count==0,"Параметры XHTTP без XHTTP.");
    var tcp=Child(stream,"tcpSettings"); var raw=Child(stream,"rawSettings");
    foreach(var tcpSettings in new[]{tcp,raw}) {

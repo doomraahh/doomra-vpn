@@ -11,7 +11,7 @@ foreach($flagCode in @('us','nl','de','se','fi')) {
  & $flagProgram (Join-Path $flagAssets ($flagCode+'.svg')) (Join-Path $flagAssets ($flagCode+'.png'))
  if($LASTEXITCODE -ne 0){throw "Flag conversion failed: $flagCode"}
 }
-foreach($name in @('world')) {
+foreach($name in 'globe-black','globe-white') {
  & $flagProgram (Join-Path $flagWorkspace "assets/decoration/$name.svg") (Join-Path $flagCache "$name.png")
  if($LASTEXITCODE -ne 0){throw "Decoration conversion failed: $name"}
 }

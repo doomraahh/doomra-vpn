@@ -48,7 +48,7 @@ namespace Luna {
    string[] titles={"Все приложения","Только выбранные","Все, кроме выбранных"}; string[] modes={"all","include","exclude"};
    for(int i=0;i<3;i++) RouteOption(g,l.Modes[i],titles[i],p.Mode==modes[i],details.NetworkEditAllowed,hot=="route-"+modes[i],focus==30+i);
    string routeHint=p.Mode=="all"?"Список ниже применяется в двух выборочных режимах.":(p.Mode=="include"?"Только приложения из списка используют VPN.":"Приложения из списка выходят в интернет напрямую.");
-   Dashboard.Label(g,details.NetworkEditAllowed?routeHint:"Чтобы изменить маршруты, отключите VPN.",l.RouteHint,13,Palette.Muted,false,false,true);
+   Dashboard.Label(g,routeHint,l.RouteHint,13,Palette.Muted,false,false,true);
    if(p.Applications.Count==0) Dashboard.Label(g,"Приложений в списке пока нет",new RectangleF(l.Rows[0].X,l.Rows[0].Y+20,l.Rows[0].Width,40),14,Palette.Muted,false,true);
    for(int i=0;i<3;i++) {
     int index=details.AppScroll+i; if(index>=p.Applications.Count) break;
@@ -64,9 +64,10 @@ namespace Luna {
    Dashboard.Button(g,l.Next,new UiAction("→") {Enabled=details.AppScroll+3<p.Applications.Count},"apps-next",hot,pressed,-1,false);
    if(focus==34) Dashboard.Line(g,l.Previous,Palette.Muted,10); if(focus==35) Dashboard.Line(g,l.Next,Palette.Muted,10);
    Dashboard.Label(g,p.Applications.Count+" / 64",new RectangleF(l.Add.Right+10,l.Add.Y,64,36),13,Palette.Muted);
+   if(details.NetworkSessionActive) Dashboard.Label(g,"Чтобы применить, отключите и подключите VPN.",new RectangleF(l.Add.X,l.Add.Bottom+4,l.Routing.Width-28,28),13,Palette.Text);
    Toggle(g,l.Kill,"Kill switch",p.KillSwitch,hot=="kill",focus==36);
    Dashboard.Label(g,"При обрыве блокирует трафик приложений, которым назначен VPN.",new RectangleF(l.Kill.X+2,l.Kill.Bottom+5,l.Kill.Width-4,48),13,Palette.Muted,false,false,true);
-   Dashboard.Button(g,l.Recovery,new UiAction("Восстановить интернет") {Enabled=details.NetworkEditAllowed},"network-recover",hot,pressed,-1,false);
+   Dashboard.Button(g,l.Recovery,new UiAction("Восстановить интернет") {Enabled=details.NetworkEditAllowed && !details.NetworkSessionActive},"network-recover",hot,pressed,-1,false);
    if(focus==37) Dashboard.Line(g,RectangleF.Inflate(l.Recovery,2,2),Palette.Muted,10);
   }
   static void Section(Graphics g,RectangleF r,string title) {
@@ -107,7 +108,8 @@ namespace Luna {
    if(id=="launch-at-login" || id=="connect-at-login") return installed && !closing && storageReady;
    if(id=="apps-prev") return details.AppScroll>0;
    if(id=="apps-next") return details.AppScroll+3<settings.Network.Applications.Count;
-   return connection==null && !busy && !closing;
+   if(id=="network-recover") return connection==null && !busy && !closing;
+   return !busy && !closing && storageReady;
   }
   async Task NetworkSettingsAction(string id) {
    if(!NetworkActionEnabled(id)) return;

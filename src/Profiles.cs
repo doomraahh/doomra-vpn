@@ -6,6 +6,7 @@ namespace Luna {
   public string Id=Guid.NewGuid().ToString("N"),Name="Основной",Subscription="";
   public SubscriptionInfo Info;
   public List<Server> Servers=new List<Server>();
+  public Dictionary<string,SavedServerCheck> Checks=new Dictionary<string,SavedServerCheck>();
   public int Selected;
  }
  internal static class ProfileStore {
@@ -25,6 +26,7 @@ namespace Luna {
    if(settings.Profiles.Count>MaximumProfiles || settings.Profiles.Any(p=>p==null || p.Servers==null || p.Subscription==null || p.Id==null || !System.Text.RegularExpressions.Regex.IsMatch(p.Id,@"^[a-f0-9]{32}$")) || settings.Profiles.Select(p=>p.Id).Distinct().Count()!=settings.Profiles.Count || settings.Profiles.Sum(p=>(long)p.Servers.Count)>MaximumServers) throw new SafeException("Повреждён список профилей.");
    foreach(var profile in settings.Profiles) {
     profile.Name=CleanName(profile.Name);
+    if(profile.Checks==null || profile.Checks.Count>MaximumServers) profile.Checks=new Dictionary<string,SavedServerCheck>();
     var selected=profile.Selected>=0 && profile.Selected<profile.Servers.Count?profile.Servers[profile.Selected]:null;
     if(profile.Servers.RemoveAll(ServerNames.IsAutoSelection)>0)
      profile.Selected=selected==null?0:Math.Max(0,profile.Servers.IndexOf(selected));
@@ -62,6 +64,10 @@ namespace Luna {
    if(profile==null && settings.Profiles.Count>=MaximumProfiles) throw new SafeException("Можно добавить до 24 профилей.");
    if(servers==null || settings.Profiles.Where(p=>p!=profile).Sum(p=>(long)p.Servers.Count)+servers.Count>MaximumServers) throw new SafeException("Слишком много серверов во всех профилях.");
    if(profile==null) { profile=new SubscriptionProfile(); settings.Profiles.Add(profile); }
+   if(profile.Checks.Count>0) {
+    var keys=new HashSet<string>(servers.Select(s=>s.CheckKey()));
+    foreach(string key in profile.Checks.Keys.Where(k=>!keys.Contains(k)).ToArray()) profile.Checks.Remove(key);
+   }
    profile.Name=clean; profile.Subscription=url; profile.Info=info; profile.Servers=servers; profile.Selected=0; Apply(settings,profile);
   }
  }

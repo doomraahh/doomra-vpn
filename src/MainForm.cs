@@ -13,14 +13,13 @@ namespace Luna {
   readonly bool transient;
   float scale=1; bool headerOnline,dragging,resizing; string hot="",pressed=""; int focus,dragY,dragScroll;
   Settings settings=new Settings(); readonly Diagnostics log=new Diagnostics();
-  readonly Dictionary<Server,string> checks=new Dictionary<Server,string>();
+  readonly Dictionary<Server,ServerCheckResult> checks=new Dictionary<Server,ServerCheckResult>();
   readonly UiAction connect=new UiAction("Подключить"),add=new UiAction("Профили"),check=new UiAction("Проверить все");
   readonly DashboardDetails details=new DashboardDetails();
   readonly SessionMeter meter=new SessionMeter();
   readonly System.Diagnostics.Stopwatch motion=new System.Diagnostics.Stopwatch(),tickClock=System.Diagnostics.Stopwatch.StartNew();
   readonly System.Windows.Forms.Timer uiTimer=new System.Windows.Forms.Timer();
   readonly System.Windows.Forms.Timer scrollTimer=new System.Windows.Forms.Timer { Interval=16 };
-  ResizeFrame resizeFrame;
   int scrollTarget;
   readonly ToolTip nameTip=new ToolTip { InitialDelay=650,ReshowDelay=150,AutoPopDelay=10000,ShowAlways=true };
   string tipText="",editingId; TextBox subscriptionInput,profileInput; bool dropdown; long lastPoll;
@@ -61,7 +60,7 @@ namespace Luna {
   }
   DashboardLayout LayoutNow { get { return new DashboardLayout(new Size(Math.Max(1,(int)(ClientSize.Width/scale)),Math.Max(1,(int)(ClientSize.Height/scale)))); } }
   PointF Logical(Point point) { return new PointF(point.X/scale,point.Y/scale); }
-  protected override void Dispose(bool disposing) { if(disposing) { ClearResizeFrame(); uiTimer.Dispose(); scrollTimer.Dispose(); nameTip.Dispose(); DisposeTray(); } base.Dispose(disposing); }
+  protected override void Dispose(bool disposing) { if(disposing) { uiTimer.Dispose(); scrollTimer.Dispose(); nameTip.Dispose(); DisposeTray(); } base.Dispose(disposing); }
   void ApplyTheme() {
    Palette.Light=settings.LightTheme; details.Light=settings.LightTheme; BackColor=Palette.Background; ForeColor=Palette.Text;
    foreach(Control control in Controls) { control.BackColor=Palette.Input; control.ForeColor=Palette.Text; }
@@ -191,11 +190,7 @@ namespace Luna {
    base.OnResizeBegin(e); resizing=true; scrollTimer.Stop(); UpdateWindowRegion();
   }
   protected override void OnResizeEnd(EventArgs e) {
-   base.OnResizeEnd(e); resizing=false; ClearResizeFrame(); UpdateWindowRegion(); Invalidate();
-  }
-  void ClearResizeFrame() {
-   if(resizeFrame==null) return;
-   resizeFrame.Dispose(); resizeFrame=null;
+   base.OnResizeEnd(e); resizing=false; UpdateWindowRegion(); Invalidate();
   }
   void UpdateWindowRegion() {
    var previous=Region;
@@ -220,24 +215,12 @@ namespace Luna {
   }
   protected override void OnPaintBackground(PaintEventArgs e) { }
   protected override void OnPaint(PaintEventArgs e) {
-   if(resizing && subscriptionInput==null && ClientSize.Width>0 && ClientSize.Height>0) {
-    if(resizeFrame==null) {
-     using(var bitmap=new Bitmap(ClientSize.Width,ClientSize.Height,System.Drawing.Imaging.PixelFormat.Format32bppPArgb)) {
-      using(var frame=Graphics.FromImage(bitmap)) PaintDashboard(frame,LayoutNow);
-      resizeFrame=new ResizeFrame(bitmap);
-     }
-    }
-    if(resizeFrame.Draw(e.Graphics,ClientSize)) return;
-   }
    var saved=e.Graphics.Save(); e.Graphics.ScaleTransform(scale,scale); var layout=LayoutNow; servers.Viewport=(int)layout.List.Height; servers.ScrollTo(servers.Scroll);
-   if(!dropdown && !details.SettingsPage && ConnectionPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawConnection(e.Graphics,layout,connect,state,headerOnline,hot,pressed,focus,details);
+   if(resizing) Dashboard.DrawLive(e.Graphics,layout,servers,connect,add,check,state,headerOnline,hot,pressed,focus,WindowState==FormWindowState.Maximized,details);
+   else if(!dropdown && !details.SettingsPage && ConnectionPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawConnection(e.Graphics,layout,connect,state,headerOnline,hot,pressed,focus,details);
    else if(!dropdown && !details.SettingsPage && ServerPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawServerViewport(e.Graphics,layout,servers,details.Light);
    else Dashboard.Draw(e.Graphics,layout,servers,connect,add,check,state,headerOnline,hot,pressed,focus,WindowState==FormWindowState.Maximized,details);
    e.Graphics.Restore(saved);
-  }
-  void PaintDashboard(Graphics graphics,DashboardLayout layout) {
-   graphics.ScaleTransform(scale,scale);
-   Dashboard.Draw(graphics,layout,servers,connect,add,check,state,headerOnline,hot,pressed,focus,WindowState==FormWindowState.Maximized,details);
   }
   protected override void OnMouseMove(MouseEventArgs e) {
    base.OnMouseMove(e); var point=Logical(e.Location); var layout=LayoutNow;
@@ -352,7 +335,7 @@ namespace Luna {
   }
   internal void ScrollPreview(int offset) { servers.ScrollTo(offset); Invalidate(); }
   sealed class Node {
-   internal string Id,Name; internal RectangleF Bounds; internal AccessibleRole Role; internal bool Enabled,Popup; internal Control Native;
+   internal string Id,Name,Description; internal RectangleF Bounds; internal AccessibleRole Role; internal bool Enabled,Popup; internal Control Native;
   }
   List<Node> Nodes() {
    var layout=LayoutNow; var nodes=new List<Node>();
@@ -413,7 +396,10 @@ namespace Luna {
    }
   }
   Node ServerNode(int index) {
-   var layout=LayoutNow; return new Node { Id="server:"+index,Name=Dashboard.ServerTitle(servers.Items[index]),Role=AccessibleRole.ListItem,Enabled=servers.Enabled && servers.CanChoose && !dropdown,Bounds=RectangleF.Intersect(layout.List,new RectangleF(layout.List.X,layout.List.Y+index*DashboardList.RowPitch-servers.Scroll,layout.List.Width,DashboardList.RowHeight)) };
+   var layout=LayoutNow;
+   var server=servers.Items[index]; ServerCheckResult result;
+   string description=checks.TryGetValue(server,out result)?result.Text+(result.CheckedAt.HasValue?". Проверено "+result.TimeLabel:""):"Не проверен";
+   return new Node { Id="server:"+index,Name=Dashboard.ServerTitle(server),Description=description,Role=AccessibleRole.ListItem,Enabled=servers.Enabled && servers.CanChoose && !dropdown,Bounds=RectangleF.Intersect(layout.List,new RectangleF(layout.List.X,layout.List.Y+index*DashboardList.RowPitch-servers.Scroll,layout.List.Width,DashboardList.RowHeight)) };
   }
   sealed class CanvasItem : AccessibleObject {
    readonly MainForm owner; readonly Node node;
@@ -423,6 +409,7 @@ namespace Luna {
     return owner.Nodes().FirstOrDefault(n=>n.Id==node.Id)??new Node { Id=node.Id,Name="",Bounds=RectangleF.Empty,Role=node.Role,Enabled=false };
    } }
    public override string Name { get { return Current.Name; } set {} }
+   public override string Description { get { return Current.Description; } }
    public override AccessibleRole Role { get { return Current.Role; } }
    public override Rectangle Bounds { get { var r=Current.Bounds; return owner.RectangleToScreen(Rectangle.Round(new RectangleF(r.X*owner.scale,r.Y*owner.scale,r.Width*owner.scale,r.Height*owner.scale))); } }
    public override AccessibleStates State { get {
@@ -456,8 +443,7 @@ namespace Luna {
   void NotifyAccess() { if(IsHandleCreated) { AccessibilityNotifyClients(AccessibleEvents.Focus,-1); AccessibilityNotifyClients(AccessibleEvents.Selection,-1); } }
   protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); NotifyAccess(); }
   void UpdateControls() {
-   ClearResizeFrame();
-   details.Network=settings.Network; details.NetworkEditAllowed=connection==null && !busy && !closing;
+   details.Network=settings.Network; details.NetworkEditAllowed=!busy && !closing && storageReady; details.NetworkSessionActive=connection!=null;
    details.Installed=installed; details.LaunchAtLogin=launchAtLogin; details.ConnectAtLogin=settings.ConnectAtLogin;
    bool wasOnline=headerOnline; headerOnline=UiState.IsOnline(state,connection!=null,connection!=null&&connection.Cancelled,closing);
    if(headerOnline!=wasOnline) { if(wasOnline) meter.Poll(); meter.SetActive(headerOnline); if(headerOnline) meter.Poll(); }
@@ -465,8 +451,8 @@ namespace Luna {
    details.ProfileNames=settings.Profiles.Select(p=>p.Name).ToList(); details.ProfileIndex=settings.Profiles.FindIndex(p=>p.Id==settings.ActiveProfile);
    details.CanRefresh=EnabledAction("refresh-profile");
    add.Enabled=!busy && !closing; check.Enabled=!closing && (checkCancel!=null || (!busy && connection==null && settings.Servers.Count>0));
-   servers.Enabled=!busy && !closing;
-   servers.CanChoose=connection==null || (!connection.Cancelled && (state=="CONNECTED" || state=="BLOCKED"));
+   servers.Enabled=(!busy || checkCancel!=null) && !closing;
+   servers.CanChoose=!busy && (connection==null || (!connection.Cancelled && (state=="CONNECTED" || state=="BLOCKED")));
    connect.Enabled=!busy && !closing && (Selected()!=null || connection!=null);
    connect.Text=connection==null?"Подключить":((state=="CONNECTED" || state=="BLOCKED")?"Отключить":(state=="RETRYING"?"Восстановление…":"Отменить"));
    if(IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange,-1); Invalidate();
@@ -487,7 +473,25 @@ namespace Luna {
    }
    settings.Selected=index; Save(); UpdateControls(); NotifyAccess();
   }
-  void FillServers() { scrollTimer.Stop(); loading=true; servers.Assign(settings.Servers,checks,settings.Selected); loading=false; UpdateControls(); }
+  void LoadSavedChecks() {
+   checks.Clear();
+   var profile=ProfileStore.Current(settings);
+   if(profile==null || profile.Checks.Count==0) return;
+   foreach(var server in settings.Servers) {
+    SavedServerCheck saved;
+    if(profile.Checks.TryGetValue(server.CheckKey(),out saved) && saved!=null) {
+     var result=saved.Read();
+     if(result!=null) checks[server]=result;
+    }
+   }
+  }
+  void RecordServerCheck(Server server,ServerCheckResult result) {
+   checks[server]=result;
+   var profile=ProfileStore.Current(settings);
+   if(profile!=null && result.CheckedAt.HasValue)
+    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status=result.Text,UnixSeconds=result.CheckedAt.Value.ToUnixTimeSeconds() };
+  }
+  void FillServers() { scrollTimer.Stop(); loading=true; LoadSavedChecks(); servers.Assign(settings.Servers,checks,settings.Selected); loading=false; UpdateControls(); }
   Task AddSubscription() { return SaveProfile(); }
   async Task SaveProfile() {
    if(busy || closing || subscriptionInput==null || profileInput==null) return;
@@ -519,17 +523,23 @@ namespace Luna {
   async Task CheckAll() {
    if(busy || connection!=null || settings.Servers.Count==0 || closing) return;
    busy=true; checkCancel=new CancellationTokenSource();
-   var snapshot=settings.Servers.ToList(); checks.Clear(); check.Text="Остановить"; UpdateControls();
+   var snapshot=settings.Servers.ToList(); int completed=0; check.Text="Стоп · 0/"+snapshot.Count; UpdateControls();
    try {
     checking=ProbeQueue.Run(snapshot,(server,token)=>Task.Run(()=>ServerCheck.Run(server,token)),(index,result)=>{
-     if(closing) return;
-     checks[snapshot[index]]=result; check.Text="Стоп · "+(index+1)+"/"+snapshot.Count; Invalidate();
-    },checkCancel.Token);
+     RecordServerCheck(snapshot[index],result);
+     if(result.CheckedAt.HasValue) {
+      completed++;
+      if(completed%4==0 && storageReady) Save();
+     }
+     check.Text="Стоп · "+completed+"/"+snapshot.Count;
+     if(!closing) Invalidate(ServerPaintBounds);
+    },checkCancel.Token,3);
     await checking;
    } catch(OperationCanceledException) {
-    foreach(var server in snapshot) { string result; if(checks.TryGetValue(server,out result) && result=="Проверка…") checks[server]="Отменено"; }
+    LoadSavedChecks();
    } catch { if(!closing) Error("Не удалось завершить проверку серверов."); }
    finally {
+    if(completed>0 && storageReady) Save();
     checkCancel.Dispose(); checkCancel=null; checking=null; busy=false;
     if(!closing) { check.Text="Проверить все"; UpdateControls(); }
    }
@@ -544,6 +554,10 @@ namespace Luna {
     string category=CoreFailure.Category(value);
     if(awaitingSwitch && category!="SWITCHING" && !category.StartsWith("ERROR")) return;
     awaitingSwitch=false; state=category; UpdateControls();
+    if(state=="CONNECTED" && Selected()!=null) {
+     RecordServerCheck(Selected(),new ServerCheckResult("Доступен",DateTimeOffset.Now));
+     if(storageReady) Save();
+    }
     if(state=="BLOCKED") Error("Соединение потеряно. Kill switch блокирует трафик приложений, назначенных VPN. Нажмите «Отключить», чтобы вернуть обычный интернет.");
     if(state.StartsWith("ERROR") && !current.Cancelled) Error(FailureMessage(state)+CoreFailure.ExitSuffix(value));
    })); } catch {} };

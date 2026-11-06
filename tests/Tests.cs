@@ -39,11 +39,16 @@ namespace Luna {
     list.CanChoose=true; list.Choose(4); list.Choose(4);
     Assert(list.Selected==4 && events==1);
    });
-   Test("Native resize frame scales cached pixels into the new bounds", delegate {
-    using(var source=new System.Drawing.Bitmap(12,12)) using(var target=new System.Drawing.Bitmap(32,28)) {
-     using(var g=System.Drawing.Graphics.FromImage(source)) g.Clear(System.Drawing.Color.SteelBlue);
-     using(var cache=new ResizeFrame(source)) using(var g=System.Drawing.Graphics.FromImage(target)) Assert(cache.Draw(g,target.Size));
-     Assert(target.GetPixel(15,13).ToArgb()==System.Drawing.Color.SteelBlue.ToArgb());
+   Test("Live resize preserves the connection card geometry and pixels", delegate {
+    var list=new DashboardList();
+    var action=new UiAction("Подключить") { Enabled=true };
+    var details=new DashboardDetails();
+    using(var small=new System.Drawing.Bitmap(900,640)) using(var large=new System.Drawing.Bitmap(1280,800)) {
+     var first=new DashboardLayout(small.Size); var second=new DashboardLayout(large.Size);
+     Assert(first.ConnectCard==second.ConnectCard && first.List.Width<second.List.Width && first.List.Height<second.List.Height);
+     using(var g=System.Drawing.Graphics.FromImage(small)) Dashboard.DrawLive(g,first,list,action,action,action,"STOPPED",false,"","",-1,false,details);
+     using(var g=System.Drawing.Graphics.FromImage(large)) Dashboard.DrawLive(g,second,list,action,action,action,"STOPPED",false,"","",-1,false,details);
+     for(int y=85;y<350;y+=3) for(int x=30;x<300;x+=3) Assert(small.GetPixel(x,y)==large.GetPixel(x,y));
     }
    });
    Test("VPN service control pipe reads the real client identity", delegate {
@@ -320,8 +325,36 @@ namespace Luna {
     var list=new System.Collections.Generic.List<Server> {new Server(),new Server(),new Server()};
     int active=0,max=0,done=0;
     ProbeQueue.Run(list,async (server,token)=>{ active++; max=Math.Max(max,active); await System.Threading.Tasks.Task.Delay(5); active--; return done!=1; },
-     (i,status)=>{ if(status!="Проверка…") { Assert(i==done); done++; } },System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+     (i,status)=>{ if(status.Text!="Проверка…") { Assert(i==done && status.CheckedAt.HasValue); done++; } else Assert(!status.CheckedAt.HasValue); },System.Threading.CancellationToken.None).GetAwaiter().GetResult();
     Assert(max==1 && done==3);
+   });
+   Test("Batch probes start three at a time and report each server once", delegate {
+    var list=Enumerable.Range(0,8).Select(i=>new Server()).ToList();
+    var release=new System.Threading.Tasks.TaskCompletionSource<bool>(); int started=0,done=0;
+    var run=ProbeQueue.Run(list,(server,token)=>{System.Threading.Interlocked.Increment(ref started); return release.Task;},
+     (i,status)=>{if(status.CheckedAt.HasValue) System.Threading.Interlocked.Increment(ref done);},System.Threading.CancellationToken.None,3);
+    Assert(started==3 && done==0);
+    release.SetResult(true); run.GetAwaiter().GetResult();
+    Assert(started==8 && done==8);
+   });
+   Test("Server checks persist in encrypted profiles and survive a rename during refresh", delegate {
+    string folder=System.IO.Path.Combine(Environment.CurrentDirectory,"test-output",Guid.NewGuid().ToString("N"));
+    string path=System.IO.Path.Combine(folder,"settings.dat");
+    var settings=new Settings { Servers=Subscriptions.Parse("trojan://synthetic@example.com:443#Before").Servers };
+    ProfileStore.Initialize(settings);
+    var server=settings.Servers[0]; var profile=ProfileStore.Current(settings);
+    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status="Доступен",UnixSeconds=1794000000 };
+    try {
+     Storage.Save(path,settings); settings=Storage.Load(path);
+     profile=ProfileStore.Current(settings);
+     var renamed=Subscriptions.Parse("trojan://synthetic@example.com:443#After").Servers;
+     ProfileStore.Upsert(settings,profile.Id,profile.Name,"",null,renamed);
+     var record=profile.Checks[renamed[0].CheckKey()].Read();
+     Assert(record.Text=="Доступен" && record.CheckedAt.Value.ToUnixTimeSeconds()==1794000000);
+     var other=Subscriptions.Parse("trojan://synthetic@elsewhere.example:443").Servers;
+     ProfileStore.Upsert(settings,profile.Id,profile.Name,"",null,other);
+     Assert(profile.Checks.Count==0);
+    } finally { if(System.IO.File.Exists(path)) System.IO.File.Delete(path); if(System.IO.Directory.Exists(folder)) System.IO.Directory.Delete(folder); }
    });
    Test("Dashboard subscription metadata survives serialization", delegate {
     var settings=new Settings { SubscriptionInfo=SubscriptionInfo.Parse("upload=100; download=200; total=1000; expire=1800000000") };
@@ -350,7 +383,7 @@ namespace Luna {
    });
    Test("Dashboard probe queue continues after a broken configuration", delegate {
     int count=0,done=0;
-    ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{count++; if(count==1) throw new SafeException("synthetic");return System.Threading.Tasks.Task.FromResult(true);},(i,result)=>{if(result!="Проверка…") { Assert(result==(i==0?"Ошибка проверки":"Доступен")); done++; }},System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+    ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{count++; if(count==1) throw new SafeException("synthetic");return System.Threading.Tasks.Task.FromResult(true);},(i,result)=>{if(result.Text!="Проверка…") { Assert(result.Text==(i==0?"Ошибка проверки":"Доступен") && result.CheckedAt.HasValue && result.TimeLabel.Length==16); done++; }},System.Threading.CancellationToken.None).GetAwaiter().GetResult();
     Assert(count==2 && done==2);
    });
    Test("Dashboard probe queue stops before next server on cancellation", delegate {
@@ -453,7 +486,7 @@ namespace Luna {
    Test("Happ compatibility request uses selectable known header", delegate { Assert(Subscriptions.RequestAgent("Happ").StartsWith("Happ/")); });
    Test("Provider rejection is not imported as a usable VLESS server", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls#"+Uri.EscapeDataString("Приложение не поддерживается :(")); Assert(r.Servers.Count==0 && r.Errors.Count==1); Assert(r.Errors[0].Contains("Сервис подписки")); });
    Test("Previously saved provider rejection cannot start a tunnel", delegate { var s=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls").Servers[0]; s.Name="Приложение не поддерживается :("; bool caught=false; try { Configuration.Build(s); } catch(SafeException) { caught=true; } Assert(caught); });
-   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.23"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
+   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.25"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
    Test("VLESS Reality and UTF8 name", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=reality&sni=example.com&fp=chrome&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&sid=abcd&type=tcp&flow=xtls-rprx-vision#%D0%A1%D0%B5%D1%80%D0%B2%D0%B5%D1%80"); Assert(r.Servers.Count==1); Assert(r.Servers[0].Name=="Сервер"); Assert(r.Servers[0].Protocol=="vless"); });
    Test("Base64 subscription", delegate { var r=Subscriptions.Parse(Convert.ToBase64String(Encoding.UTF8.GetBytes("trojan://secret@example.com:443#Test\nvless://"+id+"@example.net:443?security=tls"))); Assert(r.Servers.Count==2); });
    Test("Partial import reports unsupported format without secrets", delegate {

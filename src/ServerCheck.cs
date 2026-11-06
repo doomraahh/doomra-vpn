@@ -12,10 +12,12 @@ using System.Threading.Tasks;
 namespace Luna {
  internal static class ServerCheck {
   internal static string Build(Server server,int port) { return Build(server,port,null); }
-  internal static string Build(Server server,int port,Dictionary<string,object> proxyOverride) {
+  internal static string Build(Server server,int port,Dictionary<string,object> proxyOverride,NetworkCredential credentials=null) {
    if(port<1 || port>65535) throw new SafeException("Неверный порт проверки.");
    var config=Json.Read<Dictionary<string,object>>(Configuration.Build(server,proxyOverride??(server.Transport=="xhttp"?XrayBridge.Socks(10808,"check","synthetic-check"):null)));
-   config["inbounds"]=new object[]{Configuration.Obj("type","mixed","tag","check-in","listen","127.0.0.1","listen_port",port)};
+   var inbound=Configuration.Obj("type","mixed","tag","check-in","listen","127.0.0.1","listen_port",port);
+   if(credentials!=null) inbound["users"]=new[]{Configuration.Obj("username",credentials.UserName,"password",credentials.Password)};
+   config["inbounds"]=new object[]{inbound};
    return Json.Write(config);
   }
   internal static async Task<bool> Run(Server server,CancellationToken token) {
@@ -23,15 +25,16 @@ namespace Luna {
    if(!File.Exists(corePath)) throw new SafeException("Рядом с приложением не найдено сетевое ядро.");
    var listener=new TcpListener(IPAddress.Loopback,0); listener.Start(); int port=((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
    XrayBridge bridge=null;
-   string config=Build(server,port);
+   var credentials=new NetworkCredential(Guid.NewGuid().ToString("N"),Guid.NewGuid().ToString("N"));
    using(var timeout=CancellationTokenSource.CreateLinkedTokenSource(token))
    using(var coreLock=new FileStream(corePath,FileMode.Open,FileAccess.Read,FileShare.Read))
    using(var process=new Process { StartInfo=Configuration.StartInfo(corePath,"run") }) {
     Configuration.VerifyCore(corePath);
-    timeout.CancelAfter(20000);
+    timeout.CancelAfter(12000);
     IDisposable job=null;
     try {
-     if(server.Transport=="xhttp") { bridge=new XrayBridge(server,timeout.Token); config=Build(server,port,bridge.Outbound); }
+     if(server.Transport=="xhttp") bridge=new XrayBridge(server,timeout.Token);
+     string config=Build(server,port,bridge==null?null:bridge.Outbound,credentials);
      process.OutputDataReceived+=delegate { }; process.ErrorDataReceived+=delegate { };
      process.Start(); job=Native.GuardChild(process); process.BeginOutputReadLine(); process.BeginErrorReadLine();
      using(var input=new StreamWriter(process.StandardInput.BaseStream,new UTF8Encoding(false))) input.Write(config);
@@ -46,19 +49,14 @@ namespace Luna {
       }
       await Task.Delay(100,timeout.Token);
      }
-     if(!ready || process.HasExited) return false;
-     using(var handler=new HttpClientHandler { UseProxy=true,Proxy=new WebProxy("http://127.0.0.1:"+port),UseCookies=false,AllowAutoRedirect=false })
+     if(process.HasExited) throw new SafeException("Ядро проверки завершилось до подключения.");
+     if(!ready) return false;
+     using(var handler=new HttpClientHandler { UseProxy=true,Proxy=new WebProxy("http://127.0.0.1:"+port) { Credentials=credentials },UseCookies=false,AllowAutoRedirect=false })
      using(var http=new HttpClient(handler)) {
-      foreach(string url in new[]{"https://cp.cloudflare.com/generate_204","https://www.gstatic.com/generate_204"}) {
-       using(var requestTimeout=CancellationTokenSource.CreateLinkedTokenSource(timeout.Token)) {
-        requestTimeout.CancelAfter(7000);
-        try { using(var response=await http.GetAsync(url,HttpCompletionOption.ResponseHeadersRead,requestTimeout.Token)) if((int)response.StatusCode==204 && !process.HasExited) return true; }
-        catch(OperationCanceledException) { if(timeout.IsCancellationRequested) return false; }
-        catch(HttpRequestException) {}
-       }
-      }
+      bool reachable=await Worker.Probe(http,false,timeout.Token);
+      if(process.HasExited) throw new SafeException("Ядро проверки завершилось во время запроса.");
+      return reachable;
      }
-     return false;
     } catch(OperationCanceledException) { return false; }
     finally {
      try { if(!process.HasExited) { process.Kill(); process.WaitForExit(3000); } } catch {}

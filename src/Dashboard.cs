@@ -8,15 +8,15 @@ using System.Windows.Forms;
 using System.Text.RegularExpressions;
 namespace Luna {
  internal sealed class UiAction { internal string Text; internal bool Enabled; internal UiAction(string text) { Text=text; } }
- internal sealed class DashboardDetails { internal NetworkPolicy Network; internal int AppScroll; internal bool NetworkEditAllowed=true,Installed,LaunchAtLogin,ConnectAtLogin; internal SubscriptionInfo Subscription; internal string Elapsed="00:00:00",Upload="—",Download="—",Notice="Из личного кабинета провайдера"; internal float Angle; internal bool Moving,CanRefresh,Dropdown,Light,KeyboardFocus,NewProfile,SettingsPage; internal string Menu="",ProfileName="Основной"; internal List<string> ProfileNames=new List<string>(); internal int ProfileIndex,ProfileScroll; internal string DeleteName=""; }
+ internal sealed class DashboardDetails { internal NetworkPolicy Network; internal int AppScroll; internal bool NetworkEditAllowed=true,NetworkSessionActive,Installed,LaunchAtLogin,ConnectAtLogin; internal SubscriptionInfo Subscription; internal string Elapsed="00:00:00",Upload="—",Download="—",Notice="Из личного кабинета провайдера"; internal float Angle; internal bool Moving,CanRefresh,Dropdown,Light,KeyboardFocus,NewProfile,SettingsPage; internal string Menu="",ProfileName="Основной"; internal List<string> ProfileNames=new List<string>(); internal int ProfileIndex,ProfileScroll; internal string DeleteName=""; }
  internal sealed class UiSelection { internal string Text="Не выбран"; }
  internal sealed class DashboardList {
-  internal List<Server> Items=new List<Server>(); internal Dictionary<Server,string> Checks=new Dictionary<Server,string>();
+  internal List<Server> Items=new List<Server>(); internal Dictionary<Server,ServerCheckResult> Checks=new Dictionary<Server,ServerCheckResult>();
   internal const int RowHeight=60,RowPitch=64;
   internal int Selected=-1,Hover=-1,Scroll,Viewport=400; internal bool Enabled=true,CanChoose=true;
   internal event Action<int> SelectedChanged;
   internal int MaxScroll { get { return Math.Max(0,Math.Max(0,Items.Count*RowPitch-(RowPitch-RowHeight))-Viewport); } }
-  internal void Assign(List<Server> items,Dictionary<Server,string> checks,int selected) { Items=items; Checks=checks; Selected=selected; ScrollTo(Scroll); }
+  internal void Assign(List<Server> items,Dictionary<Server,ServerCheckResult> checks,int selected) { Items=items; Checks=checks; Selected=selected; ScrollTo(Scroll); }
   internal void ScrollTo(int offset) { Scroll=Math.Max(0,Math.Min(MaxScroll,offset)); }
   internal void Choose(int index) { if(!Enabled || !CanChoose || index<0 || index>=Items.Count) return; bool changed=index!=Selected; Selected=index; if(index*RowPitch<Scroll) ScrollTo(index*RowPitch); if(index*RowPitch+RowHeight>Scroll+Viewport) ScrollTo(index*RowPitch+RowHeight-Viewport); var callback=SelectedChanged; if(changed && callback!=null) callback(index); }
  }
@@ -59,6 +59,7 @@ namespace Luna {
   }
  }
  internal static class Dashboard {
+  [ThreadStatic] static TextCanvas.Batch liveText;
   internal static Color Text { get { return Palette.Text; } }
   internal static Color Muted { get { return Palette.Muted; } }
   internal static Color Accent { get { return Palette.Accent; } }
@@ -81,6 +82,10 @@ namespace Luna {
   internal static void Fill(Graphics g,RectangleF r,Color color,float radius=14) { using(var path=Round(r,radius)) using(var brush=new SolidBrush(color)) g.FillPath(brush,path); }
   internal static void Line(Graphics g,RectangleF r,Color color,float radius=14) { using(var path=Round(r,radius)) using(var pen=new Pen(color,1)) g.DrawPath(pen,path); }
   internal static void Label(Graphics g,string text,RectangleF r,float size,Color color,bool bold=false,bool center=false,bool wrap=false) {
+   var flags=TextFormatFlags.NoPadding|TextFormatFlags.NoPrefix|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis;
+   flags|=center?TextFormatFlags.HorizontalCenter:TextFormatFlags.Left;
+   flags|=wrap?TextFormatFlags.WordBreak:TextFormatFlags.SingleLine;
+   if(liveText!=null) { liveText.Add(text??"",r,size,color,bold,flags); return; }
    using(var transform=g.Transform) {
     var points=new[]{new PointF(r.X,r.Y),new PointF(r.Right,r.Bottom)}; transform.TransformPoints(points);
     float scale=(float)Math.Sqrt(transform.Elements[2]*transform.Elements[2]+transform.Elements[3]*transform.Elements[3]);
@@ -88,25 +93,22 @@ namespace Luna {
     using(var clip=g.Clip) {
      clip.Transform(transform); var saved=g.Save(); g.ResetTransform(); g.ResetClip();
      try {
-      var flags=TextFormatFlags.NoPadding|TextFormatFlags.NoPrefix|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis;
-      flags|=center?TextFormatFlags.HorizontalCenter:TextFormatFlags.Left;
-      flags|=wrap?TextFormatFlags.WordBreak:TextFormatFlags.SingleLine;
       using(var font=UiFonts.Get(Math.Max(13,size)*scale,bold)) TextCanvas.Draw(g,clip,text??"",font,bounds,color,flags);
      } finally { g.Restore(saved); }
     }
    }
   }
   static readonly Image Logo=RasterArtwork("Logo",256,280,1,new Rectangle(140,100,970,1060));
-  static readonly Image GlobeBlack=RasterArtwork("world",330,151,.12f),GlobeWhite=RasterArtwork("world",330,151,.16f,null,true);
+  static readonly Image GlobeBlack=RasterArtwork("globe-black",270,260,.09f),GlobeWhite=RasterArtwork("globe-white",270,260,.12f);
   static Image LoadArtwork(string name) {
    using(var stream=typeof(Dashboard).Assembly.GetManifestResourceStream("Doomra."+name))
    using(var image=Image.FromStream(stream)) return new Bitmap(image);
   }
-  static Bitmap RasterArtwork(string name,int width,int height,float opacity,Rectangle? crop=null,bool white=false) {
+  static Bitmap RasterArtwork(string name,int width,int height,float opacity,Rectangle? crop=null) {
    var result=new Bitmap(width,height,PixelFormat.Format32bppPArgb);
    using(var source=LoadArtwork(name))
    using(var g=Graphics.FromImage(result))
-   using(var alpha=ArtworkOpacity(opacity,white)) {
+   using(var alpha=ArtworkOpacity(opacity)) {
     g.InterpolationMode=InterpolationMode.HighQualityBicubic;
     var r=crop??new Rectangle(0,0,source.Width,source.Height);
     g.DrawImage(source,new Rectangle(0,0,width,height),r.X,r.Y,r.Width,r.Height,GraphicsUnit.Pixel,alpha);
@@ -115,16 +117,16 @@ namespace Luna {
   }
   static void DrawServerGlobe(Graphics g,RectangleF card) {
    var image=Palette.Light?GlobeBlack:GlobeWhite;
-   int width=(int)Math.Min(330,card.Width*.55f),height=width*image.Height/image.Width;
-   var target=new Rectangle((int)card.Right-width-12,(int)card.Bottom-height-12,width,height);
+   int width=(int)Math.Min(270,card.Width*.48f),height=width*543/564;
+   var target=new Rectangle((int)card.Right-width+12,(int)card.Bottom-height+20,width,height);
    var saved=g.Save();
    using(var clip=Round(RectangleF.Inflate(card,-1,-1),15)) g.SetClip(clip,CombineMode.Intersect);
    g.DrawImage(image,target);
    g.Restore(saved);
   }
-  static ImageAttributes ArtworkOpacity(float opacity,bool white) {
+  static ImageAttributes ArtworkOpacity(float opacity) {
    var attributes=new ImageAttributes();
-   attributes.SetColorMatrix(new ColorMatrix { Matrix33=opacity,Matrix40=white?1:0,Matrix41=white?1:0,Matrix42=white?1:0 });
+   attributes.SetColorMatrix(new ColorMatrix { Matrix33=opacity });
    return attributes;
   }
   internal static void Symbol(Graphics g,RectangleF rect,Color ink) {
@@ -216,7 +218,7 @@ namespace Luna {
   internal static void DrawConnection(Graphics g,DashboardLayout layout,UiAction connect,string state,bool online,string hot,string pressed,int focus,DashboardDetails details) {
    Palette.Light=details.Light;
    if(!details.KeyboardFocus) focus=-1;
-   g.SmoothingMode=SmoothingMode.AntiAlias; g.InterpolationMode=InterpolationMode.HighQualityBicubic;
+   g.SmoothingMode=SmoothingMode.AntiAlias; g.InterpolationMode=liveText==null?InterpolationMode.HighQualityBicubic:InterpolationMode.Low;
    using(var background=new SolidBrush(Palette.Background)) g.FillRectangle(background,RectangleF.Inflate(layout.ConnectCard,2,2));
    Card(g,layout.ConnectCard);
    if(online) Line(g,layout.ConnectCard,Palette.Light?Color.FromArgb(36,122,79):Color.FromArgb(121,201,156),16);
@@ -248,6 +250,7 @@ namespace Luna {
   }
   static void DrawServerRows(Graphics g,DashboardLayout layout,DashboardList list) {
    var clipState=g.Save(); g.SetClip(layout.List,CombineMode.Intersect);
+   if(liveText!=null) liveText.Clip=liveText.Pixels(layout.List);
    if(list.Items.Count==0) {
     Label(g,"Здесь появятся серверы",new RectangleF(layout.List.X,layout.List.Y+72,layout.List.Width,32),15,Text,false,true);
     Label(g,"Профили → Добавить",new RectangleF(layout.List.X,layout.List.Y+108,layout.List.Width,28),12,Muted,false,true);
@@ -260,23 +263,39 @@ namespace Luna {
     if(chosen) { Fill(g,r,Palette.Selection,8); Line(g,r,Palette.Light?Palette.Border:Color.FromArgb(55,185,185,185),8); }
     else if(i==list.Hover && list.Enabled && list.CanChoose) Fill(g,r,Palette.Hover,8);
     else if(i<list.Items.Count-1) using(var divider=new Pen(Palette.Border)) g.DrawLine(divider,r.X+12,r.Bottom+2,r.Right-12,r.Bottom+2);
-    Server server=list.Items[i]; string result; list.Checks.TryGetValue(server,out result);
+    Server server=list.Items[i]; ServerCheckResult result; list.Checks.TryGetValue(server,out result);
     Flag(g,new RectangleF(r.X+12,r.Y+20,28,20),CountryFlags.Resolve(server.Name,server.Host));
-    Label(g,ServerTitle(server),new RectangleF(r.X+52,r.Y+4,Math.Max(30,r.Width-184),28),14,Text);
-    Label(g,server.Protocol.ToUpperInvariant()+" / "+server.Transport.ToUpperInvariant(),new RectangleF(r.X+52,r.Y+32,Math.Max(30,r.Width-184),24),12,Muted);
-    Color color=result=="Доступен"?Accent:(result=="Нет ответа" || result=="Ошибка проверки"?(Palette.Light?Palette.Gray(100):Palette.Gray(190)):Muted);
-    Label(g,result??"Не проверен",new RectangleF(r.Right-124,r.Y+18,112,24),12,color,false,true);
+    const float statusWidth=156;
+    float titleWidth=Math.Max(30,r.Width-statusWidth-72);
+    Label(g,ServerTitle(server),new RectangleF(r.X+52,r.Y+4,titleWidth,28),14,Text);
+    Label(g,server.Protocol.ToUpperInvariant()+" / "+server.Transport.ToUpperInvariant(),new RectangleF(r.X+52,r.Y+32,titleWidth,24),12,Muted);
+    var statusBounds=new RectangleF(r.Right-statusWidth-10,r.Y+18,statusWidth,24);
+    if(result!=null && result.CheckedAt.HasValue) {
+     statusBounds.Y=r.Y+5;
+     Color color=result.Text=="Доступен"?(Palette.Light?Color.FromArgb(23,101,60):Color.FromArgb(121,201,156)):(Palette.Light?Color.FromArgb(161,35,53):Color.FromArgb(243,152,157));
+     Label(g,result.Text,statusBounds,14,color,true,true);
+     statusBounds.Y=r.Y+30;
+     Label(g,result.TimeLabel,statusBounds,13,Text,false,true);
+    } else Label(g,result==null?"Не проверен":result.Text,statusBounds,13,Muted,false,true);
    }
    g.Restore(clipState);
+   if(liveText!=null) liveText.Clip=null;
    if(list.MaxScroll>0) {
     float track=layout.List.Height-8,thumb=Math.Max(24,track*layout.List.Height/Math.Max(1,list.Items.Count*DashboardList.RowPitch));
     Fill(g,new RectangleF(layout.List.Right-5,layout.List.Y+4+(track-thumb)*list.Scroll/list.MaxScroll,3,thumb),Color.FromArgb(105,149,149,149),1.5f);
    }
   }
+  internal static void DrawLive(Graphics g,DashboardLayout layout,DashboardList list,UiAction connect,UiAction add,UiAction check,string state,bool online,string hot,string pressed,int focus,bool maximized,DashboardDetails details) {
+   using(var batch=new TextCanvas.Batch(g)) {
+    liveText=batch;
+    try { Draw(g,layout,list,connect,add,check,state,online,hot,pressed,focus,maximized,details); batch.Flush(); }
+    finally { liveText=null; }
+   }
+  }
   internal static void Draw(Graphics g,DashboardLayout layout,DashboardList list,UiAction connect,UiAction add,UiAction check,string state,bool online,string hot,string pressed,int focus,bool maximized,DashboardDetails details) {
    Palette.Light=details.Light;
    if(!details.KeyboardFocus) focus=-1;
-   g.SmoothingMode=SmoothingMode.AntiAlias; g.TextRenderingHint=TextRenderingHint.AntiAliasGridFit; g.InterpolationMode=InterpolationMode.HighQualityBicubic;
+   g.SmoothingMode=SmoothingMode.AntiAlias; g.TextRenderingHint=TextRenderingHint.AntiAliasGridFit; g.InterpolationMode=liveText==null?InterpolationMode.HighQualityBicubic:InterpolationMode.Low;
    var bounds=new RectangleF(0,0,layout.Size.Width,layout.Size.Height);
    using(var background=new SolidBrush(Palette.Background)) g.FillRectangle(background,bounds);
    Symbol(g,new RectangleF(23,12,24,24),Accent); Label(g,"doomra",new RectangleF(57,11,105,27),18,Text);
@@ -334,6 +353,7 @@ namespace Luna {
    Label(g,details.Upload,new RectangleF(footer.X+column*2,footer.Y+32,column-4,24),16,Text);
    Label(g,"За текущее подключение · TUN",new RectangleF(footer.X,footer.Y+84,footer.Width,20),12,Muted);
    if(details.Dropdown) {
+    if(liveText!=null) liveText.Flush();
 
     var panel=layout.MenuRect(details.Menu,details.ProfileNames.Count); Fill(g,panel,Palette.Surface,16); Line(g,panel,Palette.Border,16);
     string title=details.Menu=="profiles"?"Профили":(details.Menu=="settings"?"Настройки":(details.Menu=="delete"?"Удалить профиль?":(details.NewProfile?"Новый профиль":"Редактировать профиль")));

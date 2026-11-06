@@ -43,7 +43,13 @@ namespace Luna {
     if(s.TransportHost!="") transport["headers"]=Obj("Host",s.TransportHost);
     proxy["transport"]=transport;
    }
-   if(s.Transport=="grpc") proxy["transport"]=Obj("type","grpc","service_name",s.ServiceName);
+   if(s.Transport=="grpc") {
+    var grpc=Obj("type","grpc","service_name",s.ServiceName);
+    if(s.GrpcIdleSeconds>0) grpc["idle_timeout"]=Math.Max(10,s.GrpcIdleSeconds)+"s";
+    if(s.GrpcPingSeconds>0) grpc["ping_timeout"]=s.GrpcPingSeconds+"s";
+    if(s.GrpcPermitWithoutStream) grpc["permit_without_stream"]=true;
+    proxy["transport"]=grpc;
+   }
    if(s.Protocol=="hysteria2" && s.Obfs!="") proxy["obfs"]=Obj("type",s.Obfs,"password",s.ObfsPassword);
    return proxy;
   }

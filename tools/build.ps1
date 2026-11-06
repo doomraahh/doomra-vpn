@@ -10,7 +10,7 @@ $references = @('/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System
 $artwork = @('/win32icon:assets\doomra.ico','/resource:assets\doomra.ico,Doomra.Icon','/resource:assets\doomra-logo.png,Doomra.Logo','/resource:assets\fonts\JetBrainsMono-Regular.ttf,Doomra.FontRegular','/resource:assets\fonts\JetBrainsMono-Bold.ttf,Doomra.FontBold','/resource:assets\flags.zip,Doomra.Flags','/resource:assets\flags-background.zip,Doomra.FlagBackgrounds','/resource:assets\custom-flags.zip,Doomra.CustomFlagBackgrounds')
 $sources = @(Get-ChildItem src/*.cs | ForEach-Object FullName)
 $references += '/r:System.ServiceProcess.dll'
-foreach($name in @('world')) {
+foreach($name in 'globe-black','globe-white') {
     $artwork += "/resource:cache\$name.png,Doomra.$name"
 }
 & $compiler /nologo /utf8output /codepage:65001 /langversion:5 /target:winexe /platform:x64 /optimize+ /win32manifest:src\app.manifest ('/out:'+$outputExe) @references @artwork @sources

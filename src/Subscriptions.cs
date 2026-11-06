@@ -14,9 +14,19 @@ namespace Luna {
  public class Server {
   public string Name="",Protocol="",Host="",Password="",Uuid="",Method="",Security="",Sni="",Fingerprint="",PublicKey="",ShortId="",Flow="",Transport="tcp",Path="",TransportHost="",ServiceName="",Cipher="auto";
   public string XhttpMode="auto",Obfs="",ObfsPassword="";
+  public string XhttpPadding="",XhttpPostBytes="",XhttpPostInterval="";
+  public Dictionary<string,string> XhttpMux=new Dictionary<string,string>();
+  public bool XhttpNoGrpcHeader,GrpcPermitWithoutStream;
+  public int GrpcIdleSeconds,GrpcPingSeconds;
   public string[] Alpn=new string[0];
   public int Port;
   public override string ToString() { return Name; }
+  internal string CheckKey() {
+   var copy=(Server)MemberwiseClone();
+   copy.Name="";
+   using(var sha=System.Security.Cryptography.SHA256.Create())
+    return Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(Json.Write(copy))));
+  }
  }
  public class ImportResult { public int DuplicateCount; public List<Server> Servers=new List<Server>(); public List<string> Errors=new List<string>(); public List<string> Notes=new List<string>(); }
  public static class Json {
@@ -148,7 +158,7 @@ namespace Luna {
   internal static string RequestAgent(string format) {
    if(format=="v2rayN") return "v2rayN/7.0";
    if(format=="Happ") return "Happ/1.0";
-   if(format=="Luna") return "doomraVPN/0.23";
+   if(format=="Luna") return "doomraVPN/0.25";
    throw new SafeException("Неизвестный формат запроса подписки.");
   }
   public static Task<string> Download(string address,string format) { return Download(address,format,""); }

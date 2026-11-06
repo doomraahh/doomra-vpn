@@ -87,14 +87,36 @@ namespace Luna {
    return bytes+" Б";
   }
  }
+ internal sealed class ServerCheckResult {
+  internal readonly string Text;
+  internal readonly DateTimeOffset? CheckedAt;
+  internal ServerCheckResult(string text,DateTimeOffset? checkedAt=null) { Text=text; CheckedAt=checkedAt; }
+  internal string TimeLabel { get { return CheckedAt.HasValue?CheckedAt.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm",CultureInfo.InvariantCulture):""; } }
+ }
+ public sealed class SavedServerCheck {
+  public string Status;
+  public long UnixSeconds;
+  internal ServerCheckResult Read() {
+   if(Status!="Доступен" && Status!="Нет ответа" && Status!="Ошибка проверки") return null;
+   try { return new ServerCheckResult(Status,DateTimeOffset.FromUnixTimeSeconds(UnixSeconds)); }
+   catch(ArgumentOutOfRangeException) { return null; }
+  }
+ }
  internal static class ProbeQueue {
-  internal static async Task Run(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,string> progress,CancellationToken token) {
-   for(int i=0;i<servers.Count;i++) {
-    token.ThrowIfCancellationRequested(); progress(i,"Проверка…"); string result;
+  internal static Task Run(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,ServerCheckResult> progress,CancellationToken token,int concurrency=1) {
+   int next=-1;
+   var lanes=new List<Task>();
+   for(int lane=0;lane<Math.Min(concurrency,servers.Count);lane++)
+    lanes.Add(RunLane(servers,probe,progress,()=>Interlocked.Increment(ref next),token));
+   return Task.WhenAll(lanes);
+  }
+  static async Task RunLane(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,ServerCheckResult> progress,Func<int> next,CancellationToken token) {
+   for(int i=next();i<servers.Count;i=next()) {
+    token.ThrowIfCancellationRequested(); progress(i,new ServerCheckResult("Проверка…")); string result;
     try { result=await probe(servers[i],token)?"Доступен":"Нет ответа"; }
     catch(OperationCanceledException) { token.ThrowIfCancellationRequested(); result="Нет ответа"; }
     catch { result="Ошибка проверки"; }
-    token.ThrowIfCancellationRequested(); progress(i,result);
+    token.ThrowIfCancellationRequested(); progress(i,new ServerCheckResult(result,DateTimeOffset.Now));
    }
   }
  }
