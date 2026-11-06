@@ -1,0 +1,101 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using System.Net.NetworkInformation;
+using System.Threading;
+using System.Threading.Tasks;
+namespace Luna {
+ public sealed class SubscriptionInfo {
+  public long? Upload,Download,Total,Expire;
+  public long UpdatedAt;
+  public long? Used { get { if(!Upload.HasValue || !Download.HasValue || Upload.Value>long.MaxValue-Download.Value) return null; return Upload.Value+Download.Value; } }
+  public static SubscriptionInfo Parse(string header) {
+   var info=new SubscriptionInfo { UpdatedAt=(long)(DateTime.UtcNow-new DateTime(1970,1,1)).TotalSeconds };
+   if(string.IsNullOrEmpty(header) || header.Length>4096) return info;
+   var fields=new Dictionary<string,long?>(StringComparer.OrdinalIgnoreCase);
+   foreach(string part in header.Split(';')) {
+    int separator=part.IndexOf('='); if(separator<1) continue;
+    string key=part.Substring(0,separator).Trim(); long number;
+    long? value=long.TryParse(part.Substring(separator+1).Trim(),NumberStyles.None,CultureInfo.InvariantCulture,out number) && number>=0?(long?)number:null;
+    if(fields.ContainsKey(key)) fields[key]=null; else fields[key]=value;
+   }
+   fields.TryGetValue("upload",out info.Upload); fields.TryGetValue("download",out info.Download);
+   fields.TryGetValue("total",out info.Total); fields.TryGetValue("expire",out info.Expire);
+   if(info.Expire>253402300799L) info.Expire=null;
+   return info;
+  }
+ }
+ public sealed class SubscriptionDownload { public string Body; public SubscriptionInfo Info; }
+ internal sealed class TrafficAccumulator {
+  internal long Received,Sent; internal bool Available;
+  string adapter; long lastReceived,lastSent;
+  internal void Reset() { Received=Sent=0; Available=false; adapter=null; }
+  internal void Sample(string id,long received,long sent) {
+   if(received<0 || sent<0) { Gap(); return; }
+   if(adapter==id) {
+    if(received>=lastReceived) Received+=Math.Min(long.MaxValue-Received,received-lastReceived);
+    if(sent>=lastSent) Sent+=Math.Min(long.MaxValue-Sent,sent-lastSent);
+   }
+   adapter=id; lastReceived=received; lastSent=sent; Available=true;
+  }
+  internal void Gap() { adapter=null; }
+ }
+ internal sealed class SessionMeter {
+  internal readonly TrafficAccumulator Traffic=new TrafficAccumulator();
+  internal readonly Stopwatch Clock=new Stopwatch();
+  internal bool Active;
+  internal void Reset() { Traffic.Reset(); Clock.Reset(); Active=false; }
+  internal void SetActive(bool active) { Active=active; if(active) Clock.Start(); else { Clock.Stop(); Traffic.Gap(); } }
+  internal void Poll() {
+   if(!Active) return;
+   try {
+    var adapter=NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n=>n.Name==Configuration.InterfaceName && n.OperationalStatus==OperationalStatus.Up && n.GetIPProperties().UnicastAddresses.Any(a=>a.Address.ToString()=="172.30.87.1"));
+    if(adapter==null) { Traffic.Gap(); return; }
+    var stats=adapter.GetIPStatistics(); Traffic.Sample(adapter.Id,stats.BytesReceived,stats.BytesSent);
+   } catch { Traffic.Gap(); }
+  }
+  internal string Elapsed { get { return string.Format(CultureInfo.InvariantCulture,"{0:00}:{1:00}:{2:00}",(int)Clock.Elapsed.TotalHours,Clock.Elapsed.Minutes,Clock.Elapsed.Seconds); } }
+ }
+ internal static class LogoMotion {
+  internal const double Duration=.8;
+  internal static double Angle(double seconds) { double t=Math.Max(0,Math.Min(1,seconds/Duration)); return 360*(t*t*t*(t*(t*6-15)+10)); }
+ }
+ internal static class MetricText {
+  internal static string Expiry(SubscriptionInfo info) {
+   if(info==null || !info.Expire.HasValue) return "Нет данных";
+   if(info.Expire==0) return "Бессрочно";
+   try { return new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc).AddSeconds(info.Expire.Value).ToLocalTime().ToString("dd.MM.yyyy"); } catch { return "Нет данных"; }
+  }
+  static readonly CultureInfo Russian=CultureInfo.GetCultureInfo("ru-RU");
+  internal static string Used(SubscriptionInfo info) { return info!=null && info.Used.HasValue?(info.Used.Value/1000000000d).ToString("0.00",Russian)+" ГБ":"Нет данных"; }
+  internal static string Plan(SubscriptionInfo info) { return info==null || !info.Total.HasValue?"Лимит не указан":(info.Total==0?"Безлимит":"Лимит "+(info.Total.Value/1000000000d).ToString("0.##",Russian)+" ГБ"); }
+  internal static string Updated(SubscriptionInfo info) {
+   if(info==null || info.UpdatedAt<=0) return "Обновите подписку";
+   try { return "Обновлено "+new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc).AddSeconds(info.UpdatedAt).ToLocalTime().ToString("dd.MM, HH:mm",Russian); } catch { return "Обновите подписку"; }
+  }
+  internal static string Usage(SubscriptionInfo info) {
+   if(info==null || !info.Used.HasValue) return "Нет данных";
+   string used=(info.Used.Value/1000000000d).ToString("0.00",Russian);
+   return used+" / "+(info.Total.HasValue?(info.Total==0?"∞":(info.Total.Value/1000000000d).ToString("0.##",Russian)):"—")+" ГБ";
+  }
+  internal static string Bytes(long bytes) {
+   if(bytes>=1000000000) return (bytes/1000000000d).ToString("0.00",Russian)+" ГБ";
+   if(bytes>=1000000) return (bytes/1000000d).ToString("0.0",Russian)+" МБ";
+   if(bytes>=1000) return (bytes/1000d).ToString("0.0",Russian)+" КБ";
+   return bytes+" Б";
+  }
+ }
+ internal static class ProbeQueue {
+  internal static async Task Run(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,string> progress,CancellationToken token) {
+   for(int i=0;i<servers.Count;i++) {
+    token.ThrowIfCancellationRequested(); progress(i,"Проверка…"); string result;
+    try { result=await probe(servers[i],token)?"Доступен":"Нет ответа"; }
+    catch(OperationCanceledException) { token.ThrowIfCancellationRequested(); result="Нет ответа"; }
+    catch { result="Ошибка проверки"; }
+    token.ThrowIfCancellationRequested(); progress(i,result);
+   }
+  }
+ }
+}
