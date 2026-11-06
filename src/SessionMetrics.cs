@@ -30,17 +30,24 @@ namespace Luna {
  public sealed class SubscriptionDownload { public string Body; public SubscriptionInfo Info; }
  internal sealed class TrafficAccumulator {
   internal long Received,Sent; internal bool Available;
-  string adapter; long lastReceived,lastSent;
-  internal void Reset() { Received=Sent=0; Available=false; adapter=null; }
-  internal void Sample(string id,long received,long sent) {
+  internal double? ReceivedPerSecond,SentPerSecond;
+  string adapter; long lastReceived,lastSent; double lastSample;
+  internal void Reset() { Received=Sent=0; Available=false; Gap(); }
+  internal void Sample(string id,long received,long sent,double elapsedSeconds) {
    if(received<0 || sent<0) { Gap(); return; }
+   ReceivedPerSecond=SentPerSecond=null;
    if(adapter==id) {
     if(received>=lastReceived) Received+=Math.Min(long.MaxValue-Received,received-lastReceived);
     if(sent>=lastSent) Sent+=Math.Min(long.MaxValue-Sent,sent-lastSent);
+    double interval=elapsedSeconds-lastSample;
+    if(interval>0 && received>=lastReceived && sent>=lastSent) {
+     ReceivedPerSecond=(received-lastReceived)/interval;
+     SentPerSecond=(sent-lastSent)/interval;
+    }
    }
-   adapter=id; lastReceived=received; lastSent=sent; Available=true;
+   adapter=id; lastReceived=received; lastSent=sent; lastSample=elapsedSeconds; Available=true;
   }
-  internal void Gap() { adapter=null; }
+  internal void Gap() { adapter=null; ReceivedPerSecond=SentPerSecond=null; }
  }
  internal sealed class SessionMeter {
   internal readonly TrafficAccumulator Traffic=new TrafficAccumulator();
@@ -53,7 +60,7 @@ namespace Luna {
    try {
     var adapter=NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n=>n.Name==Configuration.InterfaceName && n.OperationalStatus==OperationalStatus.Up && n.GetIPProperties().UnicastAddresses.Any(a=>a.Address.ToString()=="172.30.87.1"));
     if(adapter==null) { Traffic.Gap(); return; }
-    var stats=adapter.GetIPStatistics(); Traffic.Sample(adapter.Id,stats.BytesReceived,stats.BytesSent);
+    var stats=adapter.GetIPStatistics(); Traffic.Sample(adapter.Id,stats.BytesReceived,stats.BytesSent,Clock.Elapsed.TotalSeconds);
    } catch { Traffic.Gap(); }
   }
   internal string Elapsed { get { return string.Format(CultureInfo.InvariantCulture,"{0:00}:{1:00}:{2:00}",(int)Clock.Elapsed.TotalHours,Clock.Elapsed.Minutes,Clock.Elapsed.Seconds); } }
@@ -86,12 +93,19 @@ namespace Luna {
    if(bytes>=1000) return (bytes/1000d).ToString("0.0",Russian)+" КБ";
    return bytes+" Б";
   }
+  internal static string Speed(double? received,double? sent) {
+   return "↓ "+Rate(received)+"  ↑ "+Rate(sent)+" МБ/с";
+  }
+  static string Rate(double? bytesPerSecond) {
+   return bytesPerSecond.HasValue?(bytesPerSecond.Value/1000000d).ToString("0.00",Russian):"—";
+  }
  }
  internal sealed class ServerCheckResult {
   internal readonly string Text;
   internal readonly DateTimeOffset? CheckedAt;
   internal ServerCheckResult(string text,DateTimeOffset? checkedAt=null) { Text=text; CheckedAt=checkedAt; }
   internal string TimeLabel { get { return CheckedAt.HasValue?CheckedAt.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm",CultureInfo.InvariantCulture):""; } }
+  internal string CompactTimeLabel { get { return CheckedAt.HasValue?CheckedAt.Value.ToLocalTime().ToString("dd.MM · HH:mm",CultureInfo.InvariantCulture):""; } }
  }
  public sealed class SavedServerCheck {
   public string Status;

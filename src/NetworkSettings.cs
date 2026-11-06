@@ -37,6 +37,8 @@ namespace Luna {
    Dashboard.Card(g,page);
    Dashboard.Button(g,d.Back,new UiAction("← Назад") {Enabled=true},"back",hot,pressed,focus,false);
    Dashboard.Label(g,"Настройки",new RectangleF(page.X+160,page.Y+24,260,40),24,Palette.Text);
+   if(details.NetworkSessionActive)
+    Dashboard.Label(g,"Сетевые настройки вступят в силу после переподключения",new RectangleF(page.X+160,page.Y+64,page.Width-184,20),13,Palette.Muted);
    Section(g,l.General,"Приложение");
    Section(g,l.Protection,"Защита соединения");
    Section(g,l.Routing,"Какие приложения идут через VPN");
@@ -64,7 +66,6 @@ namespace Luna {
    Dashboard.Button(g,l.Next,new UiAction("→") {Enabled=details.AppScroll+3<p.Applications.Count},"apps-next",hot,pressed,-1,false);
    if(focus==34) Dashboard.Line(g,l.Previous,Palette.Muted,10); if(focus==35) Dashboard.Line(g,l.Next,Palette.Muted,10);
    Dashboard.Label(g,p.Applications.Count+" / 64",new RectangleF(l.Add.Right+10,l.Add.Y,64,36),13,Palette.Muted);
-   if(details.NetworkSessionActive) Dashboard.Label(g,"Чтобы применить, отключите и подключите VPN.",new RectangleF(l.Add.X,l.Add.Bottom+4,l.Routing.Width-28,28),13,Palette.Text);
    Toggle(g,l.Kill,"Kill switch",p.KillSwitch,hot=="kill",focus==36);
    Dashboard.Label(g,"При обрыве блокирует трафик приложений, которым назначен VPN.",new RectangleF(l.Kill.X+2,l.Kill.Bottom+5,l.Kill.Width-4,48),13,Palette.Muted,false,false,true);
    Dashboard.Button(g,l.Recovery,new UiAction("Восстановить интернет") {Enabled=details.NetworkEditAllowed && !details.NetworkSessionActive},"network-recover",hot,pressed,-1,false);

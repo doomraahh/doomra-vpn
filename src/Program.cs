@@ -4,7 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Windows.Forms;
-[assembly: System.Reflection.AssemblyFileVersion("0.25.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.27.0.0")]
 namespace Luna {
  static class Program {
   [STAThread] static int Main(string[] args) {

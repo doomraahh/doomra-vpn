@@ -158,7 +158,7 @@ namespace Luna {
   internal static string RequestAgent(string format) {
    if(format=="v2rayN") return "v2rayN/7.0";
    if(format=="Happ") return "Happ/1.0";
-   if(format=="Luna") return "doomraVPN/0.25";
+   if(format=="Luna") return "doomraVPN/0.27";
    throw new SafeException("Неизвестный формат запроса подписки.");
   }
   public static Task<string> Download(string address,string format) { return Download(address,format,""); }

@@ -8,17 +8,33 @@ using System.Windows.Forms;
 using System.Text.RegularExpressions;
 namespace Luna {
  internal sealed class UiAction { internal string Text; internal bool Enabled; internal UiAction(string text) { Text=text; } }
- internal sealed class DashboardDetails { internal NetworkPolicy Network; internal int AppScroll; internal bool NetworkEditAllowed=true,NetworkSessionActive,Installed,LaunchAtLogin,ConnectAtLogin; internal SubscriptionInfo Subscription; internal string Elapsed="00:00:00",Upload="—",Download="—",Notice="Из личного кабинета провайдера"; internal float Angle; internal bool Moving,CanRefresh,Dropdown,Light,KeyboardFocus,NewProfile,SettingsPage; internal string Menu="",ProfileName="Основной"; internal List<string> ProfileNames=new List<string>(); internal int ProfileIndex,ProfileScroll; internal string DeleteName=""; }
+ internal sealed class DashboardDetails { internal NetworkPolicy Network; internal int AppScroll; internal bool NetworkEditAllowed=true,NetworkSessionActive,Installed,LaunchAtLogin,ConnectAtLogin; internal SubscriptionInfo Subscription; internal string Elapsed="00:00:00",Upload="—",Download="—",Speed=MetricText.Speed(null,null),Notice="Из личного кабинета провайдера"; internal float Angle; internal bool Moving,CanRefresh,Dropdown,Light,KeyboardFocus,NewProfile,SettingsPage; internal string Menu="",ProfileName="Основной"; internal List<string> ProfileNames=new List<string>(); internal int ProfileIndex,ProfileScroll; internal string DeleteName=""; }
  internal sealed class UiSelection { internal string Text="Не выбран"; }
  internal sealed class DashboardList {
   internal List<Server> Items=new List<Server>(); internal Dictionary<Server,ServerCheckResult> Checks=new Dictionary<Server,ServerCheckResult>();
-  internal const int RowHeight=60,RowPitch=64;
+  internal const int RowHeight=40,RowPitch=44;
   internal int Selected=-1,Hover=-1,Scroll,Viewport=400; internal bool Enabled=true,CanChoose=true;
   internal event Action<int> SelectedChanged;
   internal int MaxScroll { get { return Math.Max(0,Math.Max(0,Items.Count*RowPitch-(RowPitch-RowHeight))-Viewport); } }
   internal void Assign(List<Server> items,Dictionary<Server,ServerCheckResult> checks,int selected) { Items=items; Checks=checks; Selected=selected; ScrollTo(Scroll); }
   internal void ScrollTo(int offset) { Scroll=Math.Max(0,Math.Min(MaxScroll,offset)); }
   internal void Choose(int index) { if(!Enabled || !CanChoose || index<0 || index>=Items.Count) return; bool changed=index!=Selected; Selected=index; if(index*RowPitch<Scroll) ScrollTo(index*RowPitch); if(index*RowPitch+RowHeight>Scroll+Viewport) ScrollTo(index*RowPitch+RowHeight-Viewport); var callback=SelectedChanged; if(changed && callback!=null) callback(index); }
+ }
+ internal struct ServerTableColumns {
+  internal const float ScrollbarSpace=12;
+  internal const float NameInset=32;
+  internal readonly RectangleF Server,Protocol,Status,Checked;
+  internal RectangleF Name { get { return new RectangleF(Server.X+NameInset,Server.Y,Server.Width-NameInset,Server.Height); } }
+  internal ServerTableColumns(RectangleF row) {
+   const float inset=8,gap=4,protocol=92,status=92,timeWidth=106;
+   float timeX=row.Right-inset-timeWidth;
+   float statusX=timeX-gap-status;
+   float protocolX=statusX-gap-protocol;
+   Server=new RectangleF(row.X+inset,row.Y,protocolX-gap-row.X-inset,row.Height);
+   Protocol=new RectangleF(protocolX,row.Y,protocol,row.Height);
+   Status=new RectangleF(statusX,row.Y,status,row.Height);
+   Checked=new RectangleF(timeX,row.Y,timeWidth,row.Height);
+  }
  }
  internal sealed class DashboardLayout {
   internal RectangleF ConnectCard,SelectedCard,ServersCard,Connect,Add,Check,List,Footer,RefreshProfile,Popup,Input,Submit,Dismiss,NameInput,Settings,SettingsPage,Back,ThemeRow,PageThemeToggle,Delete,Minimize,Maximize,Close;
@@ -39,7 +55,8 @@ namespace Luna {
    PageThemeToggle=new RectangleF(ThemeRow.Right-76,ThemeRow.Y+30,52,28);
    Delete=new RectangleF(ServersCard.Right-84,top+88,40,32);
    Footer=new RectangleF(ServersCard.X+24,ServersCard.Bottom-112,ServersCard.Width-48,104);
-   List=new RectangleF(ServersCard.X+24,top+96,ServersCard.Width-48,Footer.Y-top-112);
+   float listTop=top+118;
+   List=new RectangleF(ServersCard.X+24,listTop,ServersCard.Width-48,Footer.Y-listTop-16);
    Popup=new RectangleF(ServersCard.Right-Math.Min(448,ServersCard.Width-48)-24,Add.Bottom+12,Math.Min(448,ServersCard.Width-48),336);
 
    NameInput=new RectangleF(Popup.X+20,Popup.Y+80,Popup.Width-40,40);
@@ -99,7 +116,7 @@ namespace Luna {
    }
   }
   static readonly Image Logo=RasterArtwork("Logo",256,280,1,new Rectangle(140,100,970,1060));
-  static readonly Image GlobeBlack=RasterArtwork("globe-black",270,260,.09f),GlobeWhite=RasterArtwork("globe-white",270,260,.12f);
+  static readonly Image GlobeBlack=RasterArtwork("globe-black",200,193,.05f),GlobeWhite=RasterArtwork("globe-white",200,193,.07f);
   static Image LoadArtwork(string name) {
    using(var stream=typeof(Dashboard).Assembly.GetManifestResourceStream("Doomra."+name))
    using(var image=Image.FromStream(stream)) return new Bitmap(image);
@@ -117,8 +134,8 @@ namespace Luna {
   }
   static void DrawServerGlobe(Graphics g,RectangleF card) {
    var image=Palette.Light?GlobeBlack:GlobeWhite;
-   int width=(int)Math.Min(270,card.Width*.48f),height=width*543/564;
-   var target=new Rectangle((int)card.Right-width+12,(int)card.Bottom-height+20,width,height);
+   int width=(int)Math.Min(200,card.Width*.48f),height=width*543/564;
+   var target=new Rectangle((int)card.Right-width+20,(int)card.Bottom-height+48,width,height);
    var saved=g.Save();
    using(var clip=Round(RectangleF.Inflate(card,-1,-1),15)) g.SetClip(clip,CombineMode.Intersect);
    g.DrawImage(image,target);
@@ -228,14 +245,13 @@ namespace Luna {
    if(details.Moving) {
     var transform=g.Save(); float cx=logoRect.X+logoRect.Width/2,cy=logoRect.Y+logoRect.Height/2;
     g.TranslateTransform(cx,cy); g.RotateTransform(details.Angle);
-    float pulse=1+.035f*(float)Math.Sin(details.Angle*Math.PI/180);
-    g.ScaleTransform(pulse,pulse); g.TranslateTransform(-cx,-cy);
+    g.TranslateTransform(-cx,-cy);
     Symbol(g,logoRect,Accent); g.Restore(transform);
    } else Symbol(g,logoRect,Accent);
    string status=ConnectionText(state,online);
    Label(g,status,new RectangleF(c.X+16,c.Y+144,c.Width-32,32),20,Text,false,true);
-   string hint=online?"Соединение активно":(state=="VERIFYING"?"Проверяем доступ через VPN":(state=="CONNECTING" || state=="SWITCHING"?"Настраиваем сетевой адаптер":"Выберите сервер в списке"));
-   Label(g,hint,new RectangleF(c.X+16,c.Y+180,c.Width-32,24),12,Muted,false,true);
+   string hint=online?details.Speed:(state=="VERIFYING"?"Проверяем доступ через VPN":(state=="CONNECTING" || state=="SWITCHING"?"Настраиваем сетевой адаптер":"Выберите сервер в списке"));
+   Label(g,hint,new RectangleF(c.X+16,c.Y+180,c.Width-32,24),13,online?Text:Muted,false,true);
    Button(g,layout.Connect,connect,"connect",hot,pressed,focus,true);
   }
   internal static void DrawServerViewport(Graphics g,DashboardLayout layout,DashboardList list,bool light) {
@@ -259,24 +275,21 @@ namespace Luna {
    int last=Math.Min(list.Items.Count-1,(int)(list.Scroll+layout.List.Height)/DashboardList.RowPitch);
    for(int i=first;i<=last;i++) {
     float y=layout.List.Y+i*DashboardList.RowPitch-list.Scroll; if(y+DashboardList.RowHeight<layout.List.Top || y>layout.List.Bottom) continue;
-    var r=new RectangleF(layout.List.X,y,layout.List.Width-(list.MaxScroll>0?12:0),DashboardList.RowHeight); bool chosen=i==list.Selected;
-    if(chosen) { Fill(g,r,Palette.Selection,8); Line(g,r,Palette.Light?Palette.Border:Color.FromArgb(55,185,185,185),8); }
+    var r=new RectangleF(layout.List.X,y,layout.List.Width-ServerTableColumns.ScrollbarSpace,DashboardList.RowHeight); bool chosen=i==list.Selected;
+    if(chosen) { Fill(g,r,Palette.Selection,8); Line(g,r,Palette.Border,8); }
     else if(i==list.Hover && list.Enabled && list.CanChoose) Fill(g,r,Palette.Hover,8);
     else if(i<list.Items.Count-1) using(var divider=new Pen(Palette.Border)) g.DrawLine(divider,r.X+12,r.Bottom+2,r.Right-12,r.Bottom+2);
     Server server=list.Items[i]; ServerCheckResult result; list.Checks.TryGetValue(server,out result);
-    Flag(g,new RectangleF(r.X+12,r.Y+20,28,20),CountryFlags.Resolve(server.Name,server.Host));
-    const float statusWidth=156;
-    float titleWidth=Math.Max(30,r.Width-statusWidth-72);
-    Label(g,ServerTitle(server),new RectangleF(r.X+52,r.Y+4,titleWidth,28),14,Text);
-    Label(g,server.Protocol.ToUpperInvariant()+" / "+server.Transport.ToUpperInvariant(),new RectangleF(r.X+52,r.Y+32,titleWidth,24),12,Muted);
-    var statusBounds=new RectangleF(r.Right-statusWidth-10,r.Y+18,statusWidth,24);
-    if(result!=null && result.CheckedAt.HasValue) {
-     statusBounds.Y=r.Y+5;
-     Color color=result.Text=="Доступен"?(Palette.Light?Color.FromArgb(23,101,60):Color.FromArgb(121,201,156)):(Palette.Light?Color.FromArgb(161,35,53):Color.FromArgb(243,152,157));
-     Label(g,result.Text,statusBounds,14,color,true,true);
-     statusBounds.Y=r.Y+30;
-     Label(g,result.TimeLabel,statusBounds,13,Text,false,true);
-    } else Label(g,result==null?"Не проверен":result.Text,statusBounds,13,Muted,false,true);
+    var columns=new ServerTableColumns(r);
+    Flag(g,new RectangleF(columns.Server.X,r.Y+11,24,18),CountryFlags.Resolve(server.Name,server.Host));
+    Label(g,ServerTitle(server),columns.Name,13,Text);
+    Label(g,server.Protocol.ToUpperInvariant()+"/"+server.Transport.ToUpperInvariant(),columns.Protocol,13,Muted);
+    string status=result==null?"Не проверен":result.Text;
+    bool checkedServer=result!=null && result.CheckedAt.HasValue;
+    Color color=Muted;
+    if(checkedServer) color=status=="Доступен"?(Palette.Light?Color.FromArgb(23,101,60):Color.FromArgb(121,201,156)):(Palette.Light?Color.FromArgb(161,35,53):Color.FromArgb(243,152,157));
+    Label(g,status=="Ошибка проверки"?"Ошибка":status,columns.Status,13,color,checkedServer);
+    Label(g,checkedServer?result.CompactTimeLabel:"—",columns.Checked,13,checkedServer?Text:Muted);
    }
    g.Restore(clipState);
    if(liveText!=null) liveText.Clip=null;
@@ -284,6 +297,14 @@ namespace Luna {
     float track=layout.List.Height-8,thumb=Math.Max(24,track*layout.List.Height/Math.Max(1,list.Items.Count*DashboardList.RowPitch));
     Fill(g,new RectangleF(layout.List.Right-5,layout.List.Y+4+(track-thumb)*list.Scroll/list.MaxScroll,3,thumb),Color.FromArgb(105,149,149,149),1.5f);
    }
+  }
+  static void DrawServerHeaders(Graphics g,DashboardLayout layout) {
+   var header=new RectangleF(layout.List.X,layout.List.Top-28,layout.List.Width-ServerTableColumns.ScrollbarSpace,26);
+   var columns=new ServerTableColumns(header);
+   Label(g,"Сервер",columns.Name,13,Muted,true);
+   Label(g,"Протокол",columns.Protocol,13,Muted,true);
+   Label(g,"Статус",columns.Status,13,Muted,true);
+   Label(g,"Проверено",columns.Checked,13,Muted,true);
   }
   internal static void DrawLive(Graphics g,DashboardLayout layout,DashboardList list,UiAction connect,UiAction add,UiAction check,string state,bool online,string hot,string pressed,int focus,bool maximized,DashboardDetails details) {
    using(var batch=new TextCanvas.Batch(g)) {
@@ -341,6 +362,7 @@ namespace Luna {
    IconButton(g,layout.Check,"check",check.Enabled,hot,pressed,focus==2);
    if(check.Text=="Остановить" || check.Text.StartsWith("Стоп")) { Fill(g,layout.Check,Palette.Hover,10); Icon(g,layout.Check,"stop",Text); }
    Button(g,layout.Add,add,"add",hot,pressed,focus,false);
+   DrawServerHeaders(g,layout);
    DrawServerRows(g,layout,list);
    var footer=layout.Footer;
    using(var line=new Pen(Palette.Border)) g.DrawLine(line,footer.X,footer.Y,footer.Right,footer.Y);

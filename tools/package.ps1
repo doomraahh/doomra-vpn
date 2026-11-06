@@ -1,4 +1,4 @@
-param([string]$InputDirectory='dist',[string]$ArchivePath='releases/doomraVPN-0.25-windows-x64.zip')
+param([string]$InputDirectory='dist',[string]$ArchivePath='releases/doomraVPN-0.27-windows-x64.zip')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $stage=(Resolve-Path -LiteralPath $InputDirectory).Path

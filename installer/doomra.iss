@@ -1,4 +1,4 @@
-﻿#define AppVersion "0.25"
+﻿#define AppVersion "0.27"
 #ifndef Stage
   #error Pass /DStage pointing to the verified build directory
 #endif
@@ -23,7 +23,7 @@ MinVersion=10.0
 CloseApplications=yes
 RestartApplications=no
 OutputDir={#Output}
-OutputBaseFilename=doomraVPN-0.25-setup-windows-x64
+OutputBaseFilename=doomraVPN-0.27-setup-windows-x64
 SetupIconFile=..\assets\doomra.ico
 Compression=lzma2
 SolidCompression=yes

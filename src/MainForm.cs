@@ -44,7 +44,7 @@ namespace Luna {
    uiTimer.Interval=250; uiTimer.Tick+=delegate {
     bool changed=motion.IsRunning,metricsChanged=false;
     if(motion.IsRunning) { details.Angle=(float)LogoMotion.Angle(motion.Elapsed.TotalSeconds); details.Moving=motion.Elapsed.TotalSeconds<LogoMotion.Duration; if(!details.Moving) { motion.Stop(); uiTimer.Interval=250; } }
-    if(tickClock.ElapsedMilliseconds-lastPoll>=1000) { lastPoll=tickClock.ElapsedMilliseconds; meter.Poll(); details.Elapsed=meter.Elapsed; details.Download=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Received):"—"; details.Upload=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Sent):"—"; metricsChanged=true; }
+    if(tickClock.ElapsedMilliseconds-lastPoll>=1000) { lastPoll=tickClock.ElapsedMilliseconds; meter.Poll(); details.Elapsed=meter.Elapsed; details.Download=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Received):"—"; details.Upload=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Sent):"—"; details.Speed=MetricText.Speed(meter.Traffic.ReceivedPerSecond,meter.Traffic.SentPerSecond); metricsChanged=true; }
     if(!closing) { if(metricsChanged) Invalidate(); else if(changed && !details.SettingsPage) Invalidate(ConnectionPaintBounds); }
    }; uiTimer.Start();
    scrollTimer.Tick+=delegate { AdvanceScroll(); };
@@ -184,7 +184,7 @@ namespace Luna {
    } catch(SafeException e) { if(!closing) Error(e.Message); } catch { if(!closing) Error("Не удалось выполнить действие."); }
   }
   async Task PrepareProfileChange() { busy=true; UpdateControls(); try { await Disconnect(); } finally { busy=false; if(!closing) UpdateControls(); } }
-  void ResetSession() { meter.Reset(); details.Elapsed="00:00:00"; details.Upload=details.Download="—"; }
+  void ResetSession() { meter.Reset(); details.Elapsed="00:00:00"; details.Upload=details.Download="—"; details.Speed=MetricText.Speed(null,null); }
   protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); MaximizedBounds=Screen.FromControl(this).WorkingArea; }
   protected override void OnResizeBegin(EventArgs e) {
    base.OnResizeBegin(e); resizing=true; scrollTimer.Stop(); UpdateWindowRegion();
@@ -226,7 +226,7 @@ namespace Luna {
    base.OnMouseMove(e); var point=Logical(e.Location); var layout=LayoutNow;
    if(dragging) { float thumb=Math.Max(24,layout.List.Height*layout.List.Height/Math.Max(1,servers.Items.Count*DashboardList.RowPitch)); servers.ScrollTo(dragScroll+(int)((point.Y-dragY)*servers.MaxScroll/Math.Max(1,layout.List.Height-thumb))); Invalidate(ServerPaintBounds); return; }
    string next=HitAction(point); int row=!dropdown && !details.SettingsPage && layout.List.Contains(point)?(int)((point.Y-layout.List.Y+servers.Scroll)/DashboardList.RowPitch):-1;
-   string tip=next=="refresh-profile"?(connection!=null?"Обновить серверы профиля (отключит VPN)":"Обновить серверы профиля"):(next=="check"?check.Text:(next=="settings"?"Настройки":(next.StartsWith("edit:")?"Редактировать профиль":(!dropdown && row>=0 && row<servers.Items.Count?servers.Items[row].Name:(!dropdown && !details.SettingsPage && layout.SelectedCard.Contains(point) && Selected()!=null?Selected().Name:"")))));
+   string tip=next=="refresh-profile"?(connection!=null?"Обновить серверы профиля (отключит VPN)":"Обновить серверы профиля"):(next=="check"?check.Text:(next=="settings"?"Настройки":(next.StartsWith("edit:")?"Редактировать профиль":(!dropdown && row>=0 && row<servers.Items.Count?ServerTooltip(servers.Items[row]):(!dropdown && !details.SettingsPage && layout.SelectedCard.Contains(point) && Selected()!=null?Selected().Name:"")))));
    if(tip!=tipText) { tipText=tip; nameTip.SetToolTip(this,tip.Length==0?null:tip); }
    if(next!=hot || row!=servers.Hover) { hot=next; servers.Hover=row; Cursor=next!="" || (row>=0 && servers.CanChoose)?Cursors.Hand:Cursors.Default; Invalidate(); }
   }
@@ -356,7 +356,7 @@ namespace Luna {
    append("min","Свернуть",layout.Minimize,AccessibleRole.PushButton,false,null);
    append("max","Развернуть",layout.Maximize,AccessibleRole.PushButton,false,null);
    append("close","Закрыть",layout.Close,AccessibleRole.PushButton,false,null);
-   append("status",Dashboard.ConnectionText(state,headerOnline),layout.ConnectCard,AccessibleRole.StaticText,false,null);
+   append("status",Dashboard.ConnectionText(state,headerOnline)+(headerOnline?". Скорость приёма и отправки: "+details.Speed:""),layout.ConnectCard,AccessibleRole.StaticText,false,null);
    append("stats","Профиль "+details.ProfileName+". Срок: "+MetricText.Expiry(settings.SubscriptionInfo)+". Использовано: "+MetricText.Usage(settings.SubscriptionInfo)+". Сеанс: "+details.Elapsed+". Получено: "+details.Download+". Отправлено: "+details.Upload,layout.Footer,AccessibleRole.StaticText,false,null);
    append("settings","Настройки",layout.Settings,AccessibleRole.PushButton,false,null);
    append("refresh-profile","Обновить серверы профиля",layout.RefreshProfile,AccessibleRole.PushButton,false,null);
@@ -395,11 +395,15 @@ namespace Luna {
     var focused=nodes.FirstOrDefault(n=>FocusId(n.Id)==owner.focus); return focused==null?null:new CanvasItem(owner,focused);
    }
   }
+  string CheckDescription(Server server) {
+   ServerCheckResult result;
+   return checks.TryGetValue(server,out result)?result.Text+(result.CheckedAt.HasValue?". Проверено "+result.TimeLabel:""):"Не проверен";
+  }
+  string ServerTooltip(Server server) { return server.Name+"\r\n"+CheckDescription(server); }
   Node ServerNode(int index) {
    var layout=LayoutNow;
-   var server=servers.Items[index]; ServerCheckResult result;
-   string description=checks.TryGetValue(server,out result)?result.Text+(result.CheckedAt.HasValue?". Проверено "+result.TimeLabel:""):"Не проверен";
-   return new Node { Id="server:"+index,Name=Dashboard.ServerTitle(server),Description=description,Role=AccessibleRole.ListItem,Enabled=servers.Enabled && servers.CanChoose && !dropdown,Bounds=RectangleF.Intersect(layout.List,new RectangleF(layout.List.X,layout.List.Y+index*DashboardList.RowPitch-servers.Scroll,layout.List.Width,DashboardList.RowHeight)) };
+   var server=servers.Items[index];
+   return new Node { Id="server:"+index,Name=Dashboard.ServerTitle(server),Description=CheckDescription(server),Role=AccessibleRole.ListItem,Enabled=servers.Enabled && servers.CanChoose && !dropdown,Bounds=RectangleF.Intersect(layout.List,new RectangleF(layout.List.X,layout.List.Y+index*DashboardList.RowPitch-servers.Scroll,layout.List.Width,DashboardList.RowHeight)) };
   }
   sealed class CanvasItem : AccessibleObject {
    readonly MainForm owner; readonly Node node;
@@ -446,7 +450,7 @@ namespace Luna {
    details.Network=settings.Network; details.NetworkEditAllowed=!busy && !closing && storageReady; details.NetworkSessionActive=connection!=null;
    details.Installed=installed; details.LaunchAtLogin=launchAtLogin; details.ConnectAtLogin=settings.ConnectAtLogin;
    bool wasOnline=headerOnline; headerOnline=UiState.IsOnline(state,connection!=null,connection!=null&&connection.Cancelled,closing);
-   if(headerOnline!=wasOnline) { if(wasOnline) meter.Poll(); meter.SetActive(headerOnline); if(headerOnline) meter.Poll(); }
+   if(headerOnline!=wasOnline) { if(wasOnline) meter.Poll(); meter.SetActive(headerOnline); if(headerOnline) meter.Poll(); details.Speed=MetricText.Speed(meter.Traffic.ReceivedPerSecond,meter.Traffic.SentPerSecond); }
    details.Subscription=settings.SubscriptionInfo; var currentProfile=ProfileStore.Current(settings); details.ProfileName=currentProfile==null?"Нет профиля":currentProfile.Name;
    details.ProfileNames=settings.Profiles.Select(p=>p.Name).ToList(); details.ProfileIndex=settings.Profiles.FindIndex(p=>p.Id==settings.ActiveProfile);
    details.CanRefresh=EnabledAction("refresh-profile");
@@ -547,7 +551,7 @@ namespace Luna {
   async Task Toggle() {
    if(connection!=null) { await Disconnect(); return; }
    if(busy || closing || Selected()==null) return;
-   HideSubscription(); meter.Reset(); details.Elapsed="00:00:00"; details.Upload=details.Download="—"; motion.Restart(); uiTimer.Interval=16; details.Moving=true; details.Angle=0;
+   HideSubscription(); ResetSession(); motion.Restart(); uiTimer.Interval=16; details.Moving=true; details.Angle=0;
    var current=new Connection(); connection=current; state="CONNECTING"; UpdateControls();
    current.Status+=value=> { if(IsDisposed || Disposing) return; try { BeginInvoke((Action)(()=> {
     if(connection!=current || closing || current.Cancelled) return;

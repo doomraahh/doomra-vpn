@@ -33,8 +33,9 @@ namespace Luna {
    Test("Server rows can scroll while switching without accepting another selection", delegate {
     var list=new DashboardList { CanChoose=false,Viewport=128,Selected=0 };
     for(int i=0;i<8;i++) list.Items.Add(new Server());
-    list.ScrollTo(256); list.Choose(4);
-    Assert(list.Scroll==256 && list.Selected==0);
+    int offset=4*DashboardList.RowPitch;
+    list.ScrollTo(offset); list.Choose(4);
+    Assert(list.Scroll==offset && list.Selected==0);
     int events=0; list.SelectedChanged+=delegate { events++; };
     list.CanChoose=true; list.Choose(4); list.Choose(4);
     Assert(list.Selected==4 && events==1);
@@ -288,7 +289,8 @@ namespace Luna {
    });
    Test("Dashboard compact list scroll exposes last selected row", delegate {
     var list=new DashboardList { Viewport=128 }; for(int i=0;i<10;i++) list.Items.Add(new Server());
-    list.Choose(9); Assert(list.Scroll==508 && list.MaxScroll==508);
+    int lastPage=9*DashboardList.RowPitch+DashboardList.RowHeight-list.Viewport;
+    list.Choose(9); Assert(list.Scroll==lastPage && list.MaxScroll==lastPage);
     list.Choose(0); Assert(list.Scroll==0);
    });
    Test("Dashboard global check belongs to server list at both window sizes", delegate {
@@ -308,12 +310,24 @@ namespace Luna {
     Assert(SubscriptionInfo.Parse("upload=9223372036854775807; download=1").Used==null);
    });
    Test("Dashboard traffic counts only deltas and rebases on adapter reset", delegate {
-    var t=new TrafficAccumulator(); t.Sample("tun",1000,2000); Assert(t.Available && t.Received==0 && t.Sent==0);
-    t.Sample("tun",1300,2100); Assert(t.Received==300 && t.Sent==100);
-    t.Sample("tun",20,30); Assert(t.Received==300 && t.Sent==100);
-    t.Sample("tun",40,60); Assert(t.Received==320 && t.Sent==130);
-    t.Gap(); t.Sample("new",9000,9000); Assert(t.Received==320);
+    var t=new TrafficAccumulator(); t.Sample("tun",1000,2000,1); Assert(t.Available && t.Received==0 && t.Sent==0);
+    t.Sample("tun",1300,2100,2); Assert(t.Received==300 && t.Sent==100);
+    t.Sample("tun",20,30,3); Assert(t.Received==300 && t.Sent==100);
+    t.Sample("tun",40,60,4); Assert(t.Received==320 && t.Sent==130);
+    t.Gap(); t.Sample("new",9000,9000,5); Assert(t.Received==320);
     t.Reset(); Assert(!t.Available && t.Received==0);
+   });
+   Test("Connection speed uses the sample interval and clears on loss or counter reset", delegate {
+    var t=new TrafficAccumulator();
+    t.Sample("tun",1000,2000,1); Assert(!t.ReceivedPerSecond.HasValue);
+    t.Sample("tun",3001000,1002000,2.5);
+    Assert(t.ReceivedPerSecond==2000000 && Math.Abs(t.SentPerSecond.Value-1000000d/1.5)<.001);
+    Assert(MetricText.Speed(t.ReceivedPerSecond,t.SentPerSecond)=="↓ 2,00  ↑ 0,67 МБ/с");
+    t.Sample("tun",3001000,1002000,4); Assert(t.ReceivedPerSecond==0 && t.SentPerSecond==0);
+    t.Sample("tun",10,20,5); Assert(!t.ReceivedPerSecond.HasValue && !t.SentPerSecond.HasValue);
+    t.Gap(); t.Sample("tun",5000010,1000020,7); Assert(!t.ReceivedPerSecond.HasValue);
+    t.Sample("tun",6000010,1000020,8); Assert(t.ReceivedPerSecond==1000000 && t.SentPerSecond==0);
+    t.Reset(); Assert(!t.ReceivedPerSecond.HasValue && !t.SentPerSecond.HasValue);
    });
    Test("Dashboard logo completes a smooth full turn in 0.8 seconds", delegate {
     Assert(LogoMotion.Angle(0)==0 && LogoMotion.Angle(.8)==360 && LogoMotion.Angle(1)==360);
@@ -486,7 +500,7 @@ namespace Luna {
    Test("Happ compatibility request uses selectable known header", delegate { Assert(Subscriptions.RequestAgent("Happ").StartsWith("Happ/")); });
    Test("Provider rejection is not imported as a usable VLESS server", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls#"+Uri.EscapeDataString("Приложение не поддерживается :(")); Assert(r.Servers.Count==0 && r.Errors.Count==1); Assert(r.Errors[0].Contains("Сервис подписки")); });
    Test("Previously saved provider rejection cannot start a tunnel", delegate { var s=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls").Servers[0]; s.Name="Приложение не поддерживается :("; bool caught=false; try { Configuration.Build(s); } catch(SafeException) { caught=true; } Assert(caught); });
-   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.25"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
+   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.27"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
    Test("VLESS Reality and UTF8 name", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=reality&sni=example.com&fp=chrome&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&sid=abcd&type=tcp&flow=xtls-rprx-vision#%D0%A1%D0%B5%D1%80%D0%B2%D0%B5%D1%80"); Assert(r.Servers.Count==1); Assert(r.Servers[0].Name=="Сервер"); Assert(r.Servers[0].Protocol=="vless"); });
    Test("Base64 subscription", delegate { var r=Subscriptions.Parse(Convert.ToBase64String(Encoding.UTF8.GetBytes("trojan://secret@example.com:443#Test\nvless://"+id+"@example.net:443?security=tls"))); Assert(r.Servers.Count==2); });
    Test("Partial import reports unsupported format without secrets", delegate {

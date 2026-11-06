@@ -1,5 +1,5 @@
 param(
-    [string]$InputDirectory='dist-v0.25',
+    [string]$InputDirectory='dist-v0.27',
     [string]$Compiler='cache/InnoSetup/ISCC.exe',
     [string]$SigningCommand
 )
@@ -18,4 +18,4 @@ if($SigningCommand) {
 }
 & $compilerPath @arguments installer/doomra.iss
 if($LASTEXITCODE -ne 0){throw 'Installer build failed'}
-Get-FileHash -LiteralPath (Join-Path $release 'doomraVPN-0.25-setup-windows-x64.exe') -Algorithm SHA256
+Get-FileHash -LiteralPath (Join-Path $release 'doomraVPN-0.27-setup-windows-x64.exe') -Algorithm SHA256
