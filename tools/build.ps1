@@ -1,4 +1,4 @@
-param([switch]$Test,[string]$OutputDirectory='dist')
+param([switch]$Test,[switch]$BuildProbe,[string]$OutputDirectory='dist-v0.59')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 & (Join-Path $PSScriptRoot "prepare-custom-flags.ps1")
@@ -7,17 +7,18 @@ $outputExe = Join-Path $OutputDirectory 'doomraVPN.exe'
 $outputTests = Join-Path $OutputDirectory 'Tests.exe'
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 $references = @('/r:System.Windows.Forms.dll','/r:System.Drawing.dll','/r:System.Web.Extensions.dll','/r:System.Security.dll','/r:System.Net.Http.dll','/r:System.IO.Compression.dll')
-$artwork = @('/win32icon:assets\doomra.ico','/resource:assets\doomra.ico,Doomra.Icon','/resource:assets\doomra-logo.png,Doomra.Logo','/resource:assets\fonts\JetBrainsMono-Regular.ttf,Doomra.FontRegular','/resource:assets\fonts\JetBrainsMono-Bold.ttf,Doomra.FontBold','/resource:assets\flags.zip,Doomra.Flags','/resource:assets\flags-background.zip,Doomra.FlagBackgrounds','/resource:assets\custom-flags.zip,Doomra.CustomFlagBackgrounds')
+$artwork = @('/win32icon:assets\doomra.ico','/resource:assets\doomra.ico,Doomra.Icon','/resource:assets\doomra-connected.ico,Doomra.ConnectedIcon','/resource:assets\doomra-logo.png,Doomra.Logo','/resource:assets\fonts\JetBrainsMono-Regular.ttf,Doomra.FontRegular','/resource:assets\fonts\JetBrainsMono-Bold.ttf,Doomra.FontBold','/resource:assets\flags.zip,Doomra.Flags','/resource:assets\flags-background.zip,Doomra.FlagBackgrounds','/resource:assets\custom-flags.zip,Doomra.CustomFlagBackgrounds')
 $sources = @(Get-ChildItem src/*.cs | ForEach-Object FullName)
 $references += '/r:System.ServiceProcess.dll'
-foreach($name in 'globe-black','globe-white') {
-    $artwork += "/resource:cache\$name.png,Doomra.$name"
-}
 & $compiler /nologo /utf8output /codepage:65001 /langversion:5 /target:winexe /platform:x64 /optimize+ /win32manifest:src\app.manifest ('/out:'+$outputExe) @references @artwork @sources
 if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
 Copy-Item LICENSE,docs/sing-box-LICENSE.txt,docs/xray-LICENSE.txt $OutputDirectory -Force
 Copy-Item src/LunaVPN.exe.config (Join-Path $OutputDirectory 'doomraVPN.exe.config') -Force
 Copy-Item assets/doomra.ico $OutputDirectory -Force
+if ($BuildProbe) {
+    & $compiler /nologo /utf8output /codepage:65001 /langversion:5 /target:winexe /platform:x64 ('/out:'+(Join-Path $OutputDirectory 'NetworkProbe.exe')) /main:Luna.NetworkProbe @references @sources (Join-Path $PSScriptRoot 'NetworkProbe.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Network probe build failed' }
+}
 if ($Test) {
     & $compiler /nologo /utf8output /codepage:65001 /target:exe /platform:x64 ('/out:'+$outputTests) /main:Luna.Tests @references @artwork @sources @(Get-ChildItem tests/*.cs | ForEach-Object FullName)
     if ($LASTEXITCODE -ne 0) { throw 'Test build failed' }

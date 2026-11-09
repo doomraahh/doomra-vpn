@@ -14,7 +14,6 @@ namespace Luna {
   public NetworkPolicy Network=new NetworkPolicy();
   public string Subscription="";
   public SubscriptionInfo SubscriptionInfo;
-  public string SubscriptionFormat="Happ";
   public bool SendDeviceId=true;
   public string DeviceId="";
   public List<Server> Servers=new List<Server>();
@@ -59,6 +58,6 @@ namespace Luna {
  public class Diagnostics {
   readonly Queue<string> entries=new Queue<string>();
   public void Add(string safeMessage) { lock(entries) { entries.Enqueue(DateTime.Now.ToString("HH:mm:ss")+"  "+safeMessage); while(entries.Count>200) entries.Dequeue(); } }
-  public string Report() { lock(entries) { return "doomra VPN 0.27 | sing-box "+Configuration.CoreVersion+" | Windows "+Environment.OSVersion.Version+"\r\nБез URI, имён серверов, адресов, паролей и ключей. Сырые логи ядра не сохраняются.\r\n\r\n"+string.Join("\r\n",entries.ToArray()); } }
+  public string Report() { lock(entries) { return "VPN 0.59 | sing-box "+Configuration.CoreVersion+" | Xray "+XrayBridge.Version+" | Windows "+Environment.OSVersion.Version+"\r\nБез URI, имён серверов, адресов, паролей и ключей. Сырые логи ядра не сохраняются.\r\n\r\n"+string.Join("\r\n",entries.ToArray()); } }
  }
 }

@@ -1,4 +1,4 @@
-﻿#define AppVersion "0.27"
+#define AppVersion "0.59"
 #ifndef Stage
   #error Pass /DStage pointing to the verified build directory
 #endif
@@ -8,14 +8,14 @@
 
 [Setup]
 AppId={{46C9F6E4-94B0-42BB-A5AB-8205BC03ED4E}
-AppName=doomra VPN
+AppName=VPN
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppVersion}.0.0
 DefaultDirName={autopf}\doomra VPN
 DisableDirPage=yes
-DefaultGroupName=doomra VPN
+DefaultGroupName=VPN
 DisableProgramGroupPage=yes
-UninstallDisplayIcon={app}\doomraVPN.exe
+UninstallDisplayIcon={app}\VPN.ico
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -23,11 +23,20 @@ MinVersion=10.0
 CloseApplications=yes
 RestartApplications=no
 OutputDir={#Output}
-OutputBaseFilename=doomraVPN-0.27-setup-windows-x64
+OutputBaseFilename=doomraVPN-{#AppVersion}-setup-windows-x64
 SetupIconFile=..\assets\doomra.ico
 Compression=lzma2
 SolidCompression=yes
-WizardStyle=modern
+WizardStyle=modern dynamic windows11 includetitlebar hidebevels
+WizardBackColor=#eeeeee
+WizardBackColorDynamicDark=#191919
+WizardImageFile=..\assets\doomra-logo.png
+WizardSmallImageFile=..\assets\doomra-logo.png
+WizardImageBackColor=#eeeeee
+WizardImageBackColorDynamicDark=#191919
+WizardSmallImageBackColor=#eeeeee
+WizardSmallImageBackColorDynamicDark=#191919
+DisableWelcomePage=no
 #ifdef SignRelease
 SignTool=doomra
 SignedUninstaller=yes
@@ -36,9 +45,18 @@ SignedUninstaller=yes
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[Messages]
+russian.WelcomeLabel1=Установка VPN
+russian.WelcomeLabel2=Установим [name/ver] для Windows и добавим ярлык в меню «Пуск».%n%nНажмите «Далее», чтобы продолжить.
+russian.ReadyLabel1=Всё готово к установке [name].
+russian.InstallingLabel=Устанавливаем VPN…
+russian.FinishedHeadingLabel=VPN установлен
+russian.FinishedLabel=VPN готов к работе. Его можно открыть сейчас или позже из меню «Пуск».
+
 [Files]
 Source: "{#Stage}\doomraVPN.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\doomraVPN.exe.config"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\doomra.ico"; DestDir: "{app}"; DestName: "VPN.ico"; Flags: ignoreversion
 Source: "{#Stage}\sing-box.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\xray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -46,13 +64,16 @@ Source: "{#Stage}\sing-box-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\xray-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\doomra VPN"; Filename: "{app}\doomraVPN.exe"; WorkingDir: "{app}"
+Name: "{autoprograms}\VPN"; Filename: "{app}\doomraVPN.exe"; WorkingDir: "{app}"; IconFilename: "{app}\VPN.ico"
+
+[InstallDelete]
+Type: files; Name: "{autoprograms}\doomra VPN.lnk"
 
 [Registry]
 Root: HKLM64; Subkey: "SOFTWARE\doomra VPN"; Flags: uninsdeletekey
 
 [Run]
-Filename: "{app}\doomraVPN.exe"; Description: "Открыть doomra VPN"; Flags: postinstall nowait skipifsilent runasoriginaluser
+Filename: "{app}\doomraVPN.exe"; Description: "Открыть VPN"; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [Code]
 const
@@ -90,7 +111,7 @@ var
 begin
   Result := '';
   if CompareText(ExpandConstant('{app}'), ExpandConstant('{autopf}\doomra VPN')) <> 0 then begin
-    Result := 'Для службы требуется стандартная папка doomra VPN в Program Files.';
+    Result := 'Для службы требуется стандартная папка приложения в Program Files.';
     Exit;
   end;
   if ServiceExists then begin
@@ -102,7 +123,7 @@ begin
     end;
     StoppedForUpgrade := AppCommand('--stop-service');
     if not StoppedForUpgrade then
-      Result := 'Не удалось остановить службу doomra VPN. Закройте клиент и повторите установку.';
+      Result := 'Не удалось остановить службу VPN. Закройте клиент и повторите установку.';
   end;
 end;
 
@@ -112,14 +133,16 @@ var
 begin
   if CurStep <> ssPostInstall then Exit;
   if not AppCommand('--register-service-owner') then
-    RaiseException('Не удалось зарегистрировать пользователя службы doomra VPN.');
+    RaiseException('Не удалось зарегистрировать пользователя службы VPN.');
   Created := not ServiceExists;
   if Created and not ServiceCommand('create DoomraVpn binPath= "\"' +
-    ExpandConstant('{app}\doomraVPN.exe') + '\" --service" start= auto DisplayName= "doomra VPN"') then
-    RaiseException('Не удалось зарегистрировать службу doomra VPN.');
+    ExpandConstant('{app}\doomraVPN.exe') + '\" --service" start= auto DisplayName= "VPN"') then
+    RaiseException('Не удалось зарегистрировать службу VPN.');
+  if not Created and not ServiceCommand('config DoomraVpn DisplayName= "VPN"') then
+    RaiseException('Не удалось обновить отображаемое имя службы VPN.');
   if not AppCommand('--start-service') then begin
     if Created then ServiceCommand('delete DoomraVpn');
-    RaiseException('Не удалось запустить службу doomra VPN.');
+    RaiseException('Не удалось запустить службу VPN.');
   end;
   SetupCompleted := True;
 end;

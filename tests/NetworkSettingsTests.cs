@@ -14,6 +14,7 @@ namespace Luna {
       action("route-exclude"); assert(settings.Network.Mode=="exclude");
       assert(form.GetType().GetField("connection",f).GetValue(form)==null);
       var names=Enumerable.Range(0,form.AccessibilityObject.GetChildCount()).Select(i=>form.AccessibilityObject.GetChild(i).Name).ToList();
+      assert(!names.Contains("Идентификатор doomra"));
       assert(names.Contains("Kill switch") && names.Contains("Добавить приложение") && names.Contains("Восстановить интернет"));
       form.GetType().GetField("busy",f).SetValue(form,true); action("route-all"); assert(settings.Network.Mode=="exclude");
      }
@@ -23,6 +24,8 @@ namespace Luna {
     foreach(var size in new[]{new System.Drawing.Size(900,640),new System.Drawing.Size(1040,720)}) {
      var d=new DashboardLayout(size); var n=new NetworkSettingsLayout(d);
      assert(d.SettingsPage.Contains(n.Recovery) && d.SettingsPage.Contains(n.Kill));
+     assert(n.Routing.Top==n.General.Top && n.Routing.Bottom==n.Protection.Bottom);
+     assert(n.General.Top-n.SessionNotice.Bottom==16 && d.SettingsPage.Contains(n.Routing));
      assert(!n.Modes[0].IntersectsWith(n.Modes[1]) && !n.Add.IntersectsWith(n.Rows[2]));
     }
    });

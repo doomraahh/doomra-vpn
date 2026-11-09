@@ -1,4 +1,4 @@
-param([string]$OutputDirectory='dist')
+param([string]$OutputDirectory='dist-v0.59')
 $ErrorActionPreference='Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $version='26.10.31'

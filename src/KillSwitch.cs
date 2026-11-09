@@ -64,6 +64,7 @@ namespace Luna {
   // (CLEAR_ACTION_RIGHT): unrelated security products may still block traffic.
   internal static List<KillSwitchRule> Build(NetworkPolicy p,string[] cores,ulong luid) {
    var rules=new List<KillSwitchRule>();
+   var applications=p.ByDomain || p.Mode=="all"?new string[0]:p.ApplicationPaths();
    for(int layer=0;layer<4;layer++) {
     rules.Add(new KillSwitchRule { Layer=layer,Permit=true,Weight=100,Loopback=true });
     if(luid!=0) rules.Add(new KillSwitchRule { Layer=layer,Permit=true,Weight=100,Interface=luid });
@@ -77,9 +78,9 @@ namespace Luna {
     // service HTTPS when the tunnel is unavailable; the UI must disclose it.
     if(layer<2) foreach(byte protocol in new byte[]{6,17})
      rules.Add(new KillSwitchRule { Layer=layer,Weight=80,Application=System.IO.Path.Combine(Environment.SystemDirectory,"svchost.exe"),Port=443,Protocol=protocol });
-    if(p.Mode=="exclude") foreach(string app in p.Applications)
+    if(!p.ByDomain && p.Mode=="exclude") foreach(string app in applications)
      rules.Add(new KillSwitchRule { Layer=layer,Permit=true,Weight=60,Application=app });
-    if(p.Mode=="include") foreach(string app in p.Applications)
+    if(!p.ByDomain && p.Mode=="include") foreach(string app in applications)
      rules.Add(new KillSwitchRule { Layer=layer,Weight=20,Application=app });
     else rules.Add(new KillSwitchRule { Layer=layer,Weight=20 });
    }
@@ -130,9 +131,9 @@ namespace Luna {
   void EnsureObjects() {
    if(ValidateObjects(false)) return;
    using(var mem=new NativeMemory()) {
-    var p=new Provider { Key=provider,Display=mem.Display("doomra VPN kill switch"),Flags=1,Data=mem.Blob(Encoding.UTF8.GetBytes(Marker)) };
+    var p=new Provider { Key=provider,Display=mem.Display("VPN kill switch"),Flags=1,Data=mem.Blob(Encoding.UTF8.GetBytes(Marker)) };
     uint code=Native.FwpmProviderAdd0(engine,ref p,IntPtr.Zero); if(code!=0 && code!=0x80320009) Check(code);
-    var s=new Sublayer { Key=sublayer,Display=mem.Display("doomra VPN application isolation"),Flags=1,Provider=mem.Struct(provider),Data=mem.Blob(Encoding.UTF8.GetBytes(Marker)),Weight=0x7fff };
+    var s=new Sublayer { Key=sublayer,Display=mem.Display("VPN application isolation"),Flags=1,Provider=mem.Struct(provider),Data=mem.Blob(Encoding.UTF8.GetBytes(Marker)),Weight=0x7fff };
     code=Native.FwpmSubLayerAdd0(engine,ref s,IntPtr.Zero);if(code!=0 && code!=0x80320009) Check(code);
    }
    if(!ValidateObjects(true)) throw new InvalidOperationException("Cannot establish kill switch ownership.");
@@ -180,7 +181,7 @@ namespace Luna {
     if(r.Loopback) conditions.Add(new Condition { Key=Flags,Match=6,Value=new Value { Type=3,Data=new IntPtr(1) } });
     if(r.Port!=0) conditions.Add(new Condition { Key=RemotePort,Value=new Value { Type=2,Data=new IntPtr(r.Port) } });
     if(r.Protocol!=0) conditions.Add(new Condition { Key=Protocol,Value=new Value { Type=1,Data=new IntPtr(r.Protocol) } });
-    var f=new Filter { Key=Guid.NewGuid(),Display=mem.Display("doomra VPN "+(r.Permit?"exception":"protection")),Flags=1,Provider=mem.Struct(provider),Data=mem.Blob(session.ToByteArray()),Layer=Layers[r.Layer],Sublayer=sublayer,Weight=new Value { Type=4,Data=mem.Struct(r.Weight) },Count=(uint)conditions.Count,Conditions=mem.Array(conditions),Action=new FilterAction { Type=r.Permit?0x1002u:0x1001u } };
+    var f=new Filter { Key=Guid.NewGuid(),Display=mem.Display("VPN "+(r.Permit?"exception":"protection")),Flags=1,Provider=mem.Struct(provider),Data=mem.Blob(session.ToByteArray()),Layer=Layers[r.Layer],Sublayer=sublayer,Weight=new Value { Type=4,Data=mem.Struct(r.Weight) },Count=(uint)conditions.Count,Conditions=mem.Array(conditions),Action=new FilterAction { Type=r.Permit?0x1002u:0x1001u } };
     ulong id;Check(Native.FwpmFilterAdd0(engine,ref f,IntPtr.Zero,out id));
    }
   }

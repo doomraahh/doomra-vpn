@@ -24,6 +24,9 @@ namespace Luna {
   public static void Send(Stream stream,string value) { byte[] data=Encoding.UTF8.GetBytes(value); if(data.Length>65536) throw new SafeException("Слишком большой профиль IPC."); lock(stream) { byte[] size=BitConverter.GetBytes(data.Length); stream.Write(size,0,4); stream.Write(data,0,data.Length); stream.Flush(); } }
  }
  public sealed class Connection : IDisposable {
+  readonly bool useInstalledService;
+  public Connection() : this(true) {}
+  internal Connection(bool useService) { useInstalledService=useService; }
   NamedPipeServerStream pipe;
   Process worker;
   volatile bool stopping;
@@ -38,7 +41,7 @@ namespace Luna {
    string name="LunaVPN-"+Guid.NewGuid().ToString("N");
    var security=new PipeSecurity(); security.SetAccessRuleProtection(true,false); security.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User,PipeAccessRights.FullControl,AccessControlType.Allow));
    security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null),PipeAccessRights.FullControl,AccessControlType.Allow));
-   bool installed=VpnService.IsInstalled;
+   bool installed=useInstalledService && VpnService.IsInstalled;
    if(installed) security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null),PipeAccessRights.FullControl,AccessControlType.Allow));
    pipe=new NamedPipeServerStream(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,security);
    Exception failure=null; NamedPipeClientStream broker=null;
@@ -105,22 +108,28 @@ namespace Luna {
    try { var adapter=NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n=>n.Name==Configuration.InterfaceName && n.OperationalStatus==OperationalStatus.Up && n.GetIPProperties().UnicastAddresses.Any(a=>a.Address.ToString()=="172.30.87.1")); if(adapter==null) return 0; Guid id; ulong luid; if(!Guid.TryParse(adapter.Id,out id) || Native.ConvertInterfaceGuidToLuid(ref id,out luid)!=0) return 0; return luid; } catch {return 0;}
   }
   public static int RecoverNetwork() { if(!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator)) return 1; try {KillSwitchSession.RecoverOwned();return 0;} catch {return 1;} }
-  static async Task<bool> ProbeEndpoint(HttpClient client,string url,CancellationToken token) {
-   try { using(var response=await client.GetAsync(url,HttpCompletionOption.ResponseHeadersRead,token).ConfigureAwait(false)) return (int)response.StatusCode==204; }
-   catch(HttpRequestException) { return false; }
-   catch(OperationCanceledException) { return false; }
+  static async Task<int?> ProbeEndpoint(HttpClient client,string url,CancellationToken token) {
+   var clock=Stopwatch.StartNew();
+   try { using(var response=await client.GetAsync(url,HttpCompletionOption.ResponseHeadersRead,token).ConfigureAwait(false)) return (int)response.StatusCode==204?(int?)Math.Max(1,clock.ElapsedMilliseconds):null; }
+   catch(HttpRequestException) { return null; }
+   catch(OperationCanceledException) { return null; }
   }
   internal static async Task<bool> Probe(HttpClient client,bool startup,CancellationToken token) {
+   return (await ProbeLatency(client,startup,token).ConfigureAwait(false)).HasValue;
+  }
+  internal static async Task<int?> ProbeLatency(HttpClient client,bool startup,CancellationToken token) {
    using(var attempt=CancellationTokenSource.CreateLinkedTokenSource(token)) {
     attempt.CancelAfter(startup?3000:6000);
     var primary=ProbeEndpoint(client,"https://cp.cloudflare.com/generate_204",attempt.Token);
     if(await Task.WhenAny(primary,Task.Delay(startup?250:750,attempt.Token)).ConfigureAwait(false)==primary) {
-     if(await primary.ConfigureAwait(false)) return true;
-     if(attempt.IsCancellationRequested) return false;
+     var latency=await primary.ConfigureAwait(false);
+     if(latency.HasValue) return latency;
+     if(attempt.IsCancellationRequested) return null;
     }
     var backup=ProbeEndpoint(client,"https://www.gstatic.com/generate_204",attempt.Token);
     var first=await Task.WhenAny(primary,backup).ConfigureAwait(false);
-    if(await first.ConfigureAwait(false)) { attempt.Cancel(); return true; }
+    var firstLatency=await first.ConfigureAwait(false);
+    if(firstLatency.HasValue) { attempt.Cancel(); return firstLatency; }
     return await (first==primary?backup:primary).ConfigureAwait(false);
    }
   }
@@ -158,7 +167,7 @@ namespace Luna {
        if(switching) Wire.Send(pipe,"SWITCHING");
        string config=null;
        try {
-        var paths=request.Server.Transport=="xhttp"?new[]{corePath,XrayBridge.CorePath}:new[]{corePath};
+        var paths=XrayBridge.Required(request.Server)?new[]{corePath,XrayBridge.CorePath}:new[]{corePath};
         config=NetworkPolicy.Apply(Configuration.Build(request.Server,paths.Length>1?XrayBridge.Socks(10808,"check","synthetic-check"):null),request.Network,System.Reflection.Assembly.GetExecutingAssembly().Location);
         Configuration.Check(corePath,config);
         if(!stop.IsCancellationRequested && request.Network.KillSwitch) {
@@ -166,21 +175,22 @@ namespace Luna {
          else protection.PrepareSwitch(paths);
         }
        } catch(SafeException) {
-        if(protection==null) throw;
+        if(protection==null) { Wire.Send(pipe,"ERROR_CONFIG"); return 1; }
         config=null;
         if(!stop.IsCancellationRequested) { Wire.Send(pipe,"BLOCKED"); stop.Token.WaitHandle.WaitOne(); }
        }
        int retries=0; string failure="ERROR_CORE";
        while(config!=null && !stop.IsCancellationRequested) {
-        if(request.Server.Transport=="xhttp") {
+        if(XrayBridge.Required(request.Server)) {
          try { bridge=new XrayBridge(request.Server,stop.Token); }
          catch(OperationCanceledException) { if(stop.IsCancellationRequested) break; throw; }
          catch(SafeException) {
-          if(protection==null) throw;
+          if(protection==null) { Wire.Send(pipe,"ERROR_CONFIG"); return 1; }
           if(!stop.IsCancellationRequested) { Wire.Send(pipe,"BLOCKED"); stop.Token.WaitHandle.WaitOne(); }
           break;
          }
          config=NetworkPolicy.Apply(Configuration.Build(request.Server,bridge.Outbound),request.Network,System.Reflection.Assembly.GetExecutingAssembly().Location);
+         Configuration.Check(corePath,config);
         }
         core=new Process { StartInfo=Configuration.StartInfo(corePath,"run") }; core.StartInfo.CreateNoWindow=false;
         var coreFailure=new CoreFailure();
@@ -211,6 +221,7 @@ namespace Luna {
          stop.Token.WaitHandle.WaitOne(150);
         }
         if(core.HasExited) { core.WaitForExit(); failure=coreFailure.Status(core.ExitCode); }
+        if(bridge!=null && bridge.RealityRejected) failure="ERROR_REALITY";
         if(protection!=null) protection.SetTunnelLuid(0);
         StopCore(core); if(!core.HasExited) throw new SafeException("Ядро ещё работает; защитные правила сохранены."); core.Dispose(); core=null; if(bridge!=null) {bridge.Dispose();bridge=null;}
         if(stop.IsCancellationRequested) break;

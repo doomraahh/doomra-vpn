@@ -12,10 +12,18 @@ namespace Luna {
    }
   }
   static void DashboardFeatures() {
+   Test("REALITY rejection produces a secret-free connection category",delegate {
+    var failure=new CoreFailure(); failure.Observe("[Error] REALITY: received real certificate (potential MITM or redirection), secret.invalid");
+    Assert(CoreFailure.Category(failure.Status(1))=="ERROR_REALITY" && !failure.Status(1).Contains("secret"));
+   });
    NetworkPolicyTests.Run(Test,Assert);
    KillSwitchTests.Run(Test,Assert);
    NetworkSettingsTests.Run(Test,Assert);
    ProtocolTests.Run(Test,Assert);
+   CompatibilityTests.Run(Test,Assert);
+   TransportRoundtripTests.Run(Test,Assert);
+   LocalImportTests.Run(Test,Assert);
+   SubscriptionVisibilityTests.Run(Test,Assert);
    Test("Startup probe uses the backup without waiting for the primary timeout", delegate {
     using(var client=new System.Net.Http.HttpClient(new SlowPrimaryProbe())) {
      var watch=System.Diagnostics.Stopwatch.StartNew();
@@ -50,6 +58,26 @@ namespace Luna {
      using(var g=System.Drawing.Graphics.FromImage(small)) Dashboard.DrawLive(g,first,list,action,action,action,"STOPPED",false,"","",-1,false,details);
      using(var g=System.Drawing.Graphics.FromImage(large)) Dashboard.DrawLive(g,second,list,action,action,action,"STOPPED",false,"","",-1,false,details);
      for(int y=85;y<350;y+=3) for(int x=30;x<300;x+=3) Assert(small.GetPixel(x,y)==large.GetPixel(x,y));
+    }
+   });
+   Test("Title bar logo pixels stay stable during live resize", delegate {
+    var list=new DashboardList();
+    var action=new UiAction("Подключить");
+    foreach(float scale in new[]{1f,1.5f}) foreach(bool light in new[]{false,true}) {
+     var details=new DashboardDetails { Light=light };
+     using(var normal=new System.Drawing.Bitmap((int)(900*scale),(int)(640*scale)))
+     using(var resized=new System.Drawing.Bitmap((int)(1040*scale),(int)(720*scale))) {
+      using(var g=System.Drawing.Graphics.FromImage(normal)) {
+       g.ScaleTransform(scale,scale);
+       Dashboard.Draw(g,new DashboardLayout(new System.Drawing.Size(900,640)),list,action,action,action,"STOPPED",false,"","",-1,false,details);
+      }
+      using(var g=System.Drawing.Graphics.FromImage(resized)) {
+       g.ScaleTransform(scale,scale);
+       Dashboard.DrawLive(g,new DashboardLayout(new System.Drawing.Size(1040,720)),list,action,action,action,"STOPPED",false,"","",-1,false,details);
+      }
+      for(int y=(int)(12*scale);y<36*scale;y++)
+       for(int x=(int)(23*scale);x<47*scale;x++) Assert(normal.GetPixel(x,y)==resized.GetPixel(x,y));
+     }
     }
    });
    Test("VPN service control pipe reads the real client identity", delegate {
@@ -92,17 +120,38 @@ namespace Luna {
      }
     }
    });
-   Test("Auto-selection servers are skipped on import and removed from saved profiles", delegate {
+   Test("Auto-selection is retained once on import and in saved profiles", delegate {
     const string id="11111111-1111-4111-8111-111111111111";
     var r=Subscriptions.Parse("vless://"+id+"@first.example:443#EU%20АвтоВыбор\nvless://"+id+"@second.example:443#Нидерланды");
-    Assert(r.Errors.Count==0 && r.Servers.Count==1 && r.Servers[0].Host=="second.example");
+    Assert(r.Errors.Count==0 && r.Servers.Count==2 && r.Servers[0].Host=="first.example");
     var json=Subscriptions.Parse("{\"remarks\":\"🇪🇺 Автовыбор ⚡\",\"outbounds\":[{\"protocol\":\"vless\",\"settings\":{\"address\":\"example.com\",\"port\":443,\"id\":\""+id+"\"}}]}");
-    Assert(json.Errors.Count==0 && json.Servers.Count==0);
+    Assert(json.Errors.Count==0 && json.Servers.Count==1);
     var settings=new Settings { Selected=1 };
     settings.Servers.Add(new Server { Name="EU АвтоВыбор · VLESS / TCP :443" });
-    settings.Servers.Add(r.Servers[0]);
+    settings.Servers.Add(r.Servers[1]);
     ProfileStore.Initialize(settings);
-    Assert(settings.Servers.Count==1 && settings.Selected==0 && settings.Servers[0]==r.Servers[0]);
+    Assert(settings.Servers.Count==2 && settings.Selected==1 && settings.Servers[1]==r.Servers[1]);
+    var duplicates=Subscriptions.Parse("vless://"+id+"@first.example:443#Автовыбор\nvless://"+id+"@other.example:443#EU%20АвтоВыбор");
+    Assert(duplicates.Servers.Count==1 && duplicates.DuplicateCount==1);
+   });
+   Test("Session footer repaint matches a full repaint after metrics change", delegate {
+    var layout=new DashboardLayout(new System.Drawing.Size(900,640));
+    var list=new DashboardList();
+    var action=new UiAction("Подключить");
+    foreach(bool light in new[]{false,true}) {
+     var details=new DashboardDetails { Light=light };
+     using(var actual=new System.Drawing.Bitmap(900,640)) using(var expected=new System.Drawing.Bitmap(900,640)) {
+      using(var g=System.Drawing.Graphics.FromImage(actual)) Dashboard.Draw(g,layout,list,action,action,action,"CONNECTED",true,"","",-1,false,details);
+      details.Elapsed="00:02:35"; details.Download="120 МБ"; details.Upload="8 МБ";
+      using(var g=System.Drawing.Graphics.FromImage(expected)) Dashboard.Draw(g,layout,list,action,action,action,"CONNECTED",true,"","",-1,false,details);
+      using(var g=System.Drawing.Graphics.FromImage(actual)) {
+       g.SetClip(System.Drawing.RectangleF.Inflate(layout.Footer,2,2));
+       Dashboard.DrawSessionFooter(g,layout,details,true);
+      }
+      for(int y=(int)layout.Footer.Top;y<layout.Footer.Bottom;y++)
+       for(int x=(int)layout.Footer.Left;x<layout.Footer.Right;x++) Assert(actual.GetPixel(x,y)==expected.GetPixel(x,y));
+     }
+    }
    });
    Test("Server viewport repaint matches a full repaint after scrolling", delegate {
     var layout=new DashboardLayout(new System.Drawing.Size(900,640));
@@ -232,6 +281,28 @@ namespace Luna {
      }
     } finally { System.Threading.SynchronizationContext.SetSynchronizationContext(previous); }
    });
+   Test("Profile editor imports a direct server URL and keeps it through reload", delegate {
+    const string address="trojan://synthetic@example.invalid:443#Test";
+    var previous=System.Threading.SynchronizationContext.Current;
+    try {
+     var settings=new Settings();
+     using(var form=new MainForm(settings)) {
+      var handle=form.Handle;
+      var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+      form.GetType().GetMethod("ShowEditor",flags).Invoke(form,new object[]{null});
+      form.Controls.OfType<System.Windows.Forms.TextBox>().First(t=>t.PasswordChar=='\0').Text="Сервер";
+      form.Controls.OfType<System.Windows.Forms.TextBox>().First(t=>t.PasswordChar!='\0').Text=address;
+      var task=(System.Threading.Tasks.Task)form.GetType().GetMethod("AddSubscription",flags).Invoke(form,null);
+      Assert(task.IsCompleted); task.GetAwaiter().GetResult();
+      var loaded=Json.Read<Settings>(Json.Write(settings));
+      ProfileStore.Initialize(loaded);
+      Assert(ProfileStore.Current(loaded).DirectUrl==address && loaded.Subscription=="" && loaded.SubscriptionInfo==null);
+      Assert(loaded.Servers.Count==1 && loaded.Servers[0].Host=="example.invalid");
+      var canRefresh=(bool)form.GetType().GetMethod("EnabledAction",flags).Invoke(form,new object[]{"refresh-profile"});
+      Assert(!canRefresh);
+     }
+    } finally { System.Threading.SynchronizationContext.SetSynchronizationContext(previous); }
+   });
    Test("Selecting current profile preserves the session display", delegate {
     var previous=System.Threading.SynchronizationContext.Current;
     try { using(var form=new MainForm(new Settings())) {
@@ -338,17 +409,17 @@ namespace Luna {
    Test("Dashboard probe queue is sequential and continues failed endpoints", delegate {
     var list=new System.Collections.Generic.List<Server> {new Server(),new Server(),new Server()};
     int active=0,max=0,done=0;
-    ProbeQueue.Run(list,async (server,token)=>{ active++; max=Math.Max(max,active); await System.Threading.Tasks.Task.Delay(5); active--; return done!=1; },
-     (i,status)=>{ if(status.Text!="Проверка…") { Assert(i==done && status.CheckedAt.HasValue); done++; } else Assert(!status.CheckedAt.HasValue); },System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+    ProbeQueue.Run(list,async (server,token)=>{ active++; max=Math.Max(max,active); await System.Threading.Tasks.Task.Delay(5); active--; return done!=1?(int?)42:null; },
+     (i,status)=>{ if(status.Text!="Проверка…") { Assert(i==done && status.CheckedAt.HasValue && status.LatencyMilliseconds==(i==1?(int?)null:42)); done++; } else Assert(!status.CheckedAt.HasValue); },System.Threading.CancellationToken.None).GetAwaiter().GetResult();
     Assert(max==1 && done==3);
    });
    Test("Batch probes start three at a time and report each server once", delegate {
     var list=Enumerable.Range(0,8).Select(i=>new Server()).ToList();
-    var release=new System.Threading.Tasks.TaskCompletionSource<bool>(); int started=0,done=0;
+    var release=new System.Threading.Tasks.TaskCompletionSource<int?>(); int started=0,done=0;
     var run=ProbeQueue.Run(list,(server,token)=>{System.Threading.Interlocked.Increment(ref started); return release.Task;},
      (i,status)=>{if(status.CheckedAt.HasValue) System.Threading.Interlocked.Increment(ref done);},System.Threading.CancellationToken.None,3);
     Assert(started==3 && done==0);
-    release.SetResult(true); run.GetAwaiter().GetResult();
+    release.SetResult(42); run.GetAwaiter().GetResult();
     Assert(started==8 && done==8);
    });
    Test("Server checks persist in encrypted profiles and survive a rename during refresh", delegate {
@@ -357,14 +428,15 @@ namespace Luna {
     var settings=new Settings { Servers=Subscriptions.Parse("trojan://synthetic@example.com:443#Before").Servers };
     ProfileStore.Initialize(settings);
     var server=settings.Servers[0]; var profile=ProfileStore.Current(settings);
-    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status="Доступен",UnixSeconds=1794000000 };
+    Assert(Json.Read<SavedServerCheck>("{\"Status\":\"Доступен\",\"UnixSeconds\":1794000000}").Read().LatencyMilliseconds==null);
+    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status="Доступен",UnixSeconds=1794000000,LatencyMilliseconds=42 };
     try {
      Storage.Save(path,settings); settings=Storage.Load(path);
      profile=ProfileStore.Current(settings);
      var renamed=Subscriptions.Parse("trojan://synthetic@example.com:443#After").Servers;
      ProfileStore.Upsert(settings,profile.Id,profile.Name,"",null,renamed);
      var record=profile.Checks[renamed[0].CheckKey()].Read();
-     Assert(record.Text=="Доступен" && record.CheckedAt.Value.ToUnixTimeSeconds()==1794000000);
+     Assert(record.Text=="Доступен" && record.CheckedAt.Value.ToUnixTimeSeconds()==1794000000 && record.LatencyMilliseconds==42);
      var other=Subscriptions.Parse("trojan://synthetic@elsewhere.example:443").Servers;
      ProfileStore.Upsert(settings,profile.Id,profile.Name,"",null,other);
      Assert(profile.Checks.Count==0);
@@ -382,7 +454,7 @@ namespace Luna {
      form.GetType().GetMethod("ShowSubscription",flags).Invoke(form,null);
      Assert(form.Controls.Count==2 && form.Controls[0] is System.Windows.Forms.TextBox);
      Assert(Enumerable.Range(0,form.AccessibilityObject.GetChildCount()).Any(i=>form.AccessibilityObject.GetChild(i).Name=="Сохранить профиль"));
-     form.Controls.OfType<System.Windows.Forms.TextBox>().First(t=>t.AccessibleName=="HTTPS-ссылка подписки").Text="invalid";
+     form.Controls.OfType<System.Windows.Forms.TextBox>().First(t=>t.AccessibleName=="Ссылка на сервер или подписку").Text="invalid";
      form.GetType().GetMethod("AddSubscription",flags).Invoke(form,null);
      Assert(form.Controls.Count==2);
      form.GetType().GetField("focus",flags).SetValue(form,11);
@@ -397,13 +469,13 @@ namespace Luna {
    });
    Test("Dashboard probe queue continues after a broken configuration", delegate {
     int count=0,done=0;
-    ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{count++; if(count==1) throw new SafeException("synthetic");return System.Threading.Tasks.Task.FromResult(true);},(i,result)=>{if(result.Text!="Проверка…") { Assert(result.Text==(i==0?"Ошибка проверки":"Доступен") && result.CheckedAt.HasValue && result.TimeLabel.Length==16); done++; }},System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+    ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{count++; if(count==1) throw new SafeException("synthetic");return System.Threading.Tasks.Task.FromResult<int?>(42);},(i,result)=>{if(result.Text!="Проверка…") { Assert(result.Text==(i==0?"Ошибка проверки":"Доступен") && result.CheckedAt.HasValue && result.TimeLabel.Length==16); done++; }},System.Threading.CancellationToken.None).GetAwaiter().GetResult();
     Assert(count==2 && done==2);
    });
    Test("Dashboard probe queue stops before next server on cancellation", delegate {
     using(var cancel=new System.Threading.CancellationTokenSource()) {
      int calls=0; bool cancelled=false;
-     try { ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{calls++;cancel.Cancel();return System.Threading.Tasks.Task.FromResult(false);},(i,status)=>{},cancel.Token).GetAwaiter().GetResult(); }
+     try { ProbeQueue.Run(new System.Collections.Generic.List<Server>{new Server(),new Server()},(server,token)=>{calls++;cancel.Cancel();return System.Threading.Tasks.Task.FromResult<int?>(null);},(i,status)=>{},cancel.Token).GetAwaiter().GetResult(); }
      catch(OperationCanceledException) { cancelled=true; }
      Assert(cancelled && calls==1);
     }
@@ -446,6 +518,44 @@ namespace Luna {
     Assert(CountryFlags.Resolve("proxy","usa3.example.com")=="US");
     Assert(CountryFlags.Resolve("🇨🇦 Toronto","example.com")=="CA");
    });
+   Test("Connection animation keeps a waiting arc until success or a terminal state", delegate {
+    foreach(string state in new[]{"CONNECTING","VERIFYING","SWITCHING","RETRYING"}) Assert(LogoMotion.IsPending(state));
+    foreach(string state in new[]{"CONNECTED","STOPPING","STOPPED","BLOCKED","ERROR_NETWORK"}) Assert(!LogoMotion.IsPending(state));
+    Assert(LogoMotion.ArcAngle(LogoMotion.Duration)==-90 && LogoMotion.ArcAngle(LogoMotion.Duration+.9)>80);
+    Assert(LogoMotion.SuccessOpacity(.6,.5)==0 && LogoMotion.SuccessOpacity(.8,.5)==1);
+    Assert(LogoMotion.SuccessOpacity(2,2)==1 && LogoMotion.SuccessOpacity(2.2,2)>0 && LogoMotion.SuccessOpacity(2.5,2)==0);
+   });
+   Test("Windows connection badge renders a green dot with transparent corners", delegate {
+    using(var badge=ConnectionBadge.Create())
+    using(var bitmap=badge.ToBitmap()) {
+     Assert(bitmap.Width==16 && bitmap.Height==16);
+     Assert(bitmap.GetPixel(0,0).A==0);
+     var center=bitmap.GetPixel(9,9);
+     Assert(center.A==255 && center.G>center.R && center.G>center.B);
+    }
+   });
+   Test("Connected tray icon preserves the globe outside the badge", delegate {
+    using(var stream=typeof(MainForm).Assembly.GetManifestResourceStream("Doomra.Icon"))
+    using(var original=new System.Drawing.Icon(stream,16,16))
+    using(var nativeOriginal=System.Drawing.Icon.FromHandle(original.Handle))
+    using(var badge=ConnectionBadge.LoadTrayIcon(16))
+    using(var source=nativeOriginal.ToBitmap())
+    using(var rendered=badge.ToBitmap()) {
+     Assert(rendered.Width==16 && rendered.Height==16);
+     int matching=0,visible=0;
+     for(int y=0;y<8;y++) for(int x=0;x<16;x++) {
+      var expected=source.GetPixel(x,y);
+      if(expected.A<250) continue;
+      visible++;
+      var actual=rendered.GetPixel(x,y);
+      if(Math.Abs(actual.A-expected.A)<=3 && Math.Abs(actual.R-expected.R)<=6 && Math.Abs(actual.G-expected.G)<=6 && Math.Abs(actual.B-expected.B)<=6) matching++;
+     }
+     Assert(visible>0 && matching==visible);
+     Assert(rendered.GetPixel(0,0).A==0);
+     var dot=rendered.GetPixel(11,11);
+     Assert(dot.A==255 && dot.G>dot.R && dot.G>dot.B);
+    }
+   });
    Test("Title indicator turns green only for a live confirmed connection", delegate {
     Assert(UiState.IsOnline("CONNECTED",true,false,false));
     foreach(string state in new[]{"CONNECTING","RETRYING","STOPPING","STOPPED","ERROR_CORE","ERROR_DNS"}) Assert(!UiState.IsOnline(state,true,false,false));
@@ -463,7 +573,7 @@ namespace Luna {
    Test("Closed loopback VPN endpoint is not reported available", delegate {
     var listener=new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback,0); listener.Start(); int port=((System.Net.IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
     var s=Subscriptions.Parse("trojan://synthetic@127.0.0.1:"+port).Servers[0];
-    Assert(!ServerCheck.Run(s,System.Threading.CancellationToken.None).GetAwaiter().GetResult());
+    Assert(!ServerCheck.Run(s,System.Threading.CancellationToken.None).GetAwaiter().GetResult().HasValue);
    });
    Test("Disposing a probe job kills its child process", delegate {
     using(var child=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location,"--sleep") { UseShellExecute=false,CreateNoWindow=true })) {
@@ -498,9 +608,24 @@ namespace Luna {
    Test("Provider instruction with spelling variant is rejected", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls#"+Uri.EscapeDataString("↓Попробуйте установить рекомендованое из списка↓")); Assert(r.Servers.Count==0 && r.Errors.Count==1); });
    Test("Both provider instruction rows rejected in Base64 subscription", delegate { string a="vless://"+id+"@example.com:443?security=tls#"; var r=Subscriptions.Parse(Convert.ToBase64String(Encoding.UTF8.GetBytes(a+Uri.EscapeDataString("Приложение не поддерживается :(")+"\n"+a+Uri.EscapeDataString("↓Попробуйте установить рекомендованное из списка↓")))); Assert(r.Servers.Count==0 && r.Errors.Count==2); });
    Test("Happ compatibility request uses selectable known header", delegate { Assert(Subscriptions.RequestAgent("Happ").StartsWith("Happ/")); });
+   Test("doomra subscription identity keeps the existing device ID", delegate {
+    const string device="Luna-synthetic-device";
+    using(var request=Subscriptions.CreateRequest(new Uri("https://example.com/subscription"),"doomra",device)) {
+     Assert(request.Headers.UserAgent.ToString()==Subscriptions.RequestAgent("Luna"));
+     Assert(request.Headers.GetValues("x-hwid").Single()==device && request.Headers.GetValues("x-device-model").Single()=="doomra VPN");
+    }
+   });
+   Test("Removed subscription preference is ignored when loading old settings", delegate {
+    const string device="Luna-synthetic-device";
+    var settings=Json.Read<Settings>("{\"UseDoomraIdentity\":true,\"DeviceId\":\"Luna-synthetic-device\"}");
+    Assert(settings.DeviceId==device && !Json.Write(settings).Contains("UseDoomraIdentity"));
+    using(var request=Subscriptions.CreateRequest(new Uri("https://example.com/subscription"),"Happ",settings.DeviceId)) {
+     Assert(request.Headers.UserAgent.ToString()=="Happ/1.0" && request.Headers.GetValues("x-hwid").Single()==device);
+    }
+   });
    Test("Provider rejection is not imported as a usable VLESS server", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls#"+Uri.EscapeDataString("Приложение не поддерживается :(")); Assert(r.Servers.Count==0 && r.Errors.Count==1); Assert(r.Errors[0].Contains("Сервис подписки")); });
    Test("Previously saved provider rejection cannot start a tunnel", delegate { var s=Subscriptions.Parse("vless://"+id+"@example.com:443?security=tls").Servers[0]; s.Name="Приложение не поддерживается :("; bool caught=false; try { Configuration.Build(s); } catch(SafeException) { caught=true; } Assert(caught); });
-   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.27"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
+   Test("Subscription format chooses known User-Agent and rejects arbitrary header", delegate { Assert(Subscriptions.RequestAgent("v2rayN")=="v2rayN/7.0"); Assert(Subscriptions.RequestAgent("Luna")=="doomraVPN/0.31"); bool caught=false; try { Subscriptions.RequestAgent("secret\r\nX-Injected: value"); } catch(SafeException e) { caught=true; Assert(!e.Message.Contains("secret")); } Assert(caught); });
    Test("VLESS Reality and UTF8 name", delegate { var r=Subscriptions.Parse("vless://"+id+"@example.com:443?security=reality&sni=example.com&fp=chrome&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&sid=abcd&type=tcp&flow=xtls-rprx-vision#%D0%A1%D0%B5%D1%80%D0%B2%D0%B5%D1%80"); Assert(r.Servers.Count==1); Assert(r.Servers[0].Name=="Сервер"); Assert(r.Servers[0].Protocol=="vless"); });
    Test("Base64 subscription", delegate { var r=Subscriptions.Parse(Convert.ToBase64String(Encoding.UTF8.GetBytes("trojan://secret@example.com:443#Test\nvless://"+id+"@example.net:443?security=tls"))); Assert(r.Servers.Count==2); });
    Test("Partial import reports unsupported format without secrets", delegate {

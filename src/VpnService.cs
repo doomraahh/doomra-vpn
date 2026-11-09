@@ -94,7 +94,7 @@ namespace Luna {
    if(!IsInstalled) throw new InvalidOperationException("Invalid service installation.");
    owner=ReadOwner();
    listener=CreateListener(owner);
-   thread=new Thread(Listen) { IsBackground=true,Name="doomra VPN IPC" };
+   thread=new Thread(Listen) { IsBackground=true,Name="VPN IPC" };
    thread.Start();
   }
   internal static NamedPipeServerStream CreateListener(SecurityIdentifier owner,string name=PipeName) {
@@ -188,7 +188,7 @@ namespace Luna {
     return pipe;
    } catch {
     pipe.Dispose();
-    throw new SafeException("Служба doomra VPN недоступна. Запустите восстановление через установщик.");
+    throw new SafeException("Служба VPN недоступна. Запустите восстановление через установщик.");
    }
   }
   internal static NamedPipeClientStream CreateClient(string name) {

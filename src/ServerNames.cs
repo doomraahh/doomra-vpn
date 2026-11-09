@@ -5,7 +5,7 @@ namespace Luna {
   internal static bool IsAutoSelection(Server server) {
    if(server==null || string.IsNullOrEmpty(server.Name)) return false;
    string name=Regex.Replace(server.Name,@"[^\p{L}\p{N}\s·/]","").Trim();
-   return Regex.IsMatch(name,@"^(?:EU\s+)?автовыбор(?:\s*·\s*(?:VLESS|VMESS|TROJAN|SS|HYSTERIA2)\s*/.*)?$",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
+   return Regex.IsMatch(name,@"^(?:EU\s+)?(?:автовыбор|автоподбор|auto[ -]?(?:select|selection))(?:\s*·\s*(?:VLESS|VMESS|TROJAN|SS|HYSTERIA2|TUIC|ANYTLS)\s*/.*)?$",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
   }
   static bool Generic(string name) { return string.IsNullOrWhiteSpace(name) || Regex.IsMatch(name.Trim(),@"^(proxy|outbound|node)([-_ ]?\d+)?$",RegexOptions.IgnoreCase); }
   internal static string FromJson(string remarks,string tag,Server server) {

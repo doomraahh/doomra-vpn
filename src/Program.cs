@@ -4,7 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Windows.Forms;
-[assembly: System.Reflection.AssemblyFileVersion("0.27.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.59.0.0")]
 namespace Luna {
  static class Program {
   [STAThread] static int Main(string[] args) {
@@ -28,7 +28,7 @@ namespace Luna {
    using(var single=new Mutex(true,@"Local\LunaVPN.UI."+System.Security.Principal.WindowsIdentity.GetCurrent().User.Value,out created)) {
     if(!created) { if(!args.Contains("--autostart")) MainForm.RequestShow(); return 0; }
     Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-    Application.ThreadException+=delegate { MessageBox.Show("Внутренняя ошибка интерфейса. Отключите VPN и перезапустите приложение.","doomra VPN"); };
+    Application.ThreadException+=delegate { MessageBox.Show("Внутренняя ошибка интерфейса. Отключите VPN и перезапустите приложение.","VPN"); };
     Application.Run(new MainForm(args.Contains("--autostart"))); return 0;
    }
   }

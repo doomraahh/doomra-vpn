@@ -12,29 +12,47 @@ namespace Luna {
   internal const string Version="26.10.31";
   internal const string Hash="d5b558191cccb1e92a5772b68b8cab67717b26f634b0f15153215f65ae982a7e";
   Process process; FileStream coreLock; IDisposable job;
+  readonly CoreFailure failure=new CoreFailure();
+  internal bool RealityRejected { get {return CoreFailure.Category(failure.Status(0))=="ERROR_REALITY";} }
   internal readonly int Port;
   internal readonly string Username=Guid.NewGuid().ToString("N"),Password=Guid.NewGuid().ToString("N");
   internal bool Alive { get { try { return process!=null && !process.HasExited; } catch { return false; } } }
   internal static string CorePath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"xray.exe"); } }
+  internal static bool Required(Server s) { return s.Dialer!=null || s.Transport=="xhttp" || s.Transport=="grpc" || s.Transport=="httpupgrade" || (s.Protocol=="vless" && s.Security=="reality"); }
   static void Verify(string path) {
-   if(!File.Exists(path)) throw new SafeException("Для XHTTP требуется xray.exe из полного архива doomra VPN.");
+   if(!File.Exists(path)) throw new SafeException("Требуется xray.exe из полного архива VPN.");
    using(var input=File.OpenRead(path)) using(var sha=SHA256.Create()) if(BitConverter.ToString(sha.ComputeHash(input)).Replace("-","").ToLowerInvariant()!=Hash) throw new SafeException("Контрольная сумма Xray не совпадает. Подключение отменено.");
   }
   static ProcessStartInfo StartInfo(string path) { return new ProcessStartInfo(path,"run -format json -config stdin:") {UseShellExecute=false,RedirectStandardInput=true,RedirectStandardError=true,RedirectStandardOutput=true,CreateNoWindow=true,WorkingDirectory=Path.GetDirectoryName(path)}; }
+  internal static void Check(string config) {
+   Verify(CorePath);
+   var info=StartInfo(CorePath); info.Arguments="run -test -format json -config stdin:";
+   using(var check=new Process {StartInfo=info}) {
+    check.Start();
+    using(var guard=Native.GuardChild(check)) {
+     var output=check.StandardOutput.ReadToEndAsync(); var errors=check.StandardError.ReadToEndAsync();
+     using(var input=new StreamWriter(check.StandardInput.BaseStream,new UTF8Encoding(false))) input.Write(config);
+     if(!check.WaitForExit(10000)) {check.Kill();check.WaitForExit(3000);throw new SafeException("Проверка Xray превысила 10 с.");}
+     System.Threading.Tasks.Task.WaitAll(output,errors);
+     if(check.ExitCode!=0) throw new SafeException("Xray отклонил конфигурацию. Параметры и ключи скрыты.");
+    }
+   }
+  }
   internal XrayBridge(Server server,CancellationToken token) {
    var listener=new TcpListener(IPAddress.Loopback,0); listener.Start(); Port=((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
    try {
     coreLock=new FileStream(CorePath,FileMode.Open,FileAccess.Read,FileShare.Read); Verify(CorePath);
-    process=new Process {StartInfo=StartInfo(CorePath)}; process.OutputDataReceived+=delegate{}; process.ErrorDataReceived+=delegate{};
+    string config=XrayConfig.Build(server,Port,Username,Password); Check(config); token.ThrowIfCancellationRequested();
+    process=new Process {StartInfo=StartInfo(CorePath)}; process.OutputDataReceived+=(o,e)=>failure.Observe(e.Data); process.ErrorDataReceived+=(o,e)=>failure.Observe(e.Data);
     process.Start(); job=Native.GuardChild(process); process.BeginOutputReadLine(); process.BeginErrorReadLine();
-    using(var input=new StreamWriter(process.StandardInput.BaseStream,new UTF8Encoding(false))) input.Write(XrayConfig.Build(server,Port,Username,Password));
+    using(var input=new StreamWriter(process.StandardInput.BaseStream,new UTF8Encoding(false))) input.Write(config);
     bool ready=false;
     for(int i=0;i<60 && Alive;i++) {
      token.ThrowIfCancellationRequested();
      using(var client=new TcpClient()) { try { var pending=client.ConnectAsync(IPAddress.Loopback,Port); if(pending.Wait(100) && client.Connected) { ready=true; break; } } catch {} }
      token.WaitHandle.WaitOne(50);
     }
-    if(!ready || !Alive) throw new SafeException("Не удалось запустить локальный мост XHTTP.");
+    if(!ready || !Alive) throw new SafeException("Не удалось запустить мост Xray. Проверьте параметры сервера.");
    } catch {Dispose(); throw;}
   }
   internal Dictionary<string,object> Outbound { get { return Socks(Port,Username,Password); } }

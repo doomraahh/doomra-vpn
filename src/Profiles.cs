@@ -4,6 +4,9 @@ using System.Linq;
 namespace Luna {
  public sealed class SubscriptionProfile {
   public string Id=Guid.NewGuid().ToString("N"),Name="Основной",Subscription="";
+  public string DirectUrl="";
+  public bool LocalImport;
+  internal string SourceUrl { get { return DirectUrl==""?Subscription:DirectUrl; } }
   public SubscriptionInfo Info;
   public List<Server> Servers=new List<Server>();
   public Dictionary<string,SavedServerCheck> Checks=new Dictionary<string,SavedServerCheck>();
@@ -25,10 +28,12 @@ namespace Luna {
    settings.ProfilesInitialized=true;
    if(settings.Profiles.Count>MaximumProfiles || settings.Profiles.Any(p=>p==null || p.Servers==null || p.Subscription==null || p.Id==null || !System.Text.RegularExpressions.Regex.IsMatch(p.Id,@"^[a-f0-9]{32}$")) || settings.Profiles.Select(p=>p.Id).Distinct().Count()!=settings.Profiles.Count || settings.Profiles.Sum(p=>(long)p.Servers.Count)>MaximumServers) throw new SafeException("Повреждён список профилей.");
    foreach(var profile in settings.Profiles) {
+    profile.DirectUrl=profile.DirectUrl??"";
     profile.Name=CleanName(profile.Name);
     if(profile.Checks==null || profile.Checks.Count>MaximumServers) profile.Checks=new Dictionary<string,SavedServerCheck>();
     var selected=profile.Selected>=0 && profile.Selected<profile.Servers.Count?profile.Servers[profile.Selected]:null;
-    if(profile.Servers.RemoveAll(ServerNames.IsAutoSelection)>0)
+    bool autoSeen=false;
+    if(profile.Servers.RemoveAll(s=> { if(!ServerNames.IsAutoSelection(s)) return false; if(autoSeen) return true; autoSeen=true; return false; })>0)
      profile.Selected=selected==null?0:Math.Max(0,profile.Servers.IndexOf(selected));
    }
    var current=Current(settings)??settings.Profiles.FirstOrDefault(); if(current==null) Clear(settings); else Apply(settings,current);
@@ -57,7 +62,7 @@ namespace Luna {
    string clean=CleanName(name); var profile=settings.Profiles.FirstOrDefault(p=>p.Id==id); if(profile==null) throw new SafeException("Профиль не найден.");
    profile.Name=clean;
   }
-  internal static void Upsert(Settings settings,string id,string name,string url,SubscriptionInfo info,List<Server> servers) {
+  internal static void Upsert(Settings settings,string id,string name,string url,SubscriptionInfo info,List<Server> servers,string directUrl="",bool localImport=false) {
    string clean=CleanName(name); Capture(settings);
    var profile=id==null?null:settings.Profiles.FirstOrDefault(p=>p.Id==id);
    if(id!=null && profile==null) throw new SafeException("Профиль не найден.");
@@ -68,7 +73,9 @@ namespace Luna {
     var keys=new HashSet<string>(servers.Select(s=>s.CheckKey()));
     foreach(string key in profile.Checks.Keys.Where(k=>!keys.Contains(k)).ToArray()) profile.Checks.Remove(key);
    }
-   profile.Name=clean; profile.Subscription=url; profile.Info=info; profile.Servers=servers; profile.Selected=0; Apply(settings,profile);
+   profile.Name=clean; profile.Subscription=url; profile.DirectUrl=directUrl;
+   profile.LocalImport=localImport;
+   profile.Info=info; profile.Servers=servers; profile.Selected=0; Apply(settings,profile);
   }
  }
 }

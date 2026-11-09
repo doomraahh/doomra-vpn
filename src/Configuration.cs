@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 namespace Luna {
@@ -19,15 +21,20 @@ namespace Luna {
     Obj("type","https","tag","remote","server","1.1.1.1","path","/dns-query","tls",Obj("enabled",true,"server_name","cloudflare-dns.com"),"detour","proxy"),
     Obj("type","https","tag","bootstrap","server","1.1.1.1","path","/dns-query","tls",Obj("enabled",true,"server_name","cloudflare-dns.com"))
    },"final","remote","strategy","prefer_ipv4");
+   var tun=Obj("type","tun","tag","tun-in","interface_name",InterfaceName,"address",new[]{"172.30.87.1/30","fd87:6c75:6e61::1/126"},"mtu",1500,"auto_route",true,"strict_route",true,"dns_mode","hijack","stack","mixed");
+   var bypass=new System.Collections.Generic.List<string>();
+   for(var hop=s;hop!=null;hop=hop.Dialer) { IPAddress ip; if(IPAddress.TryParse(hop.Host,out ip)) bypass.Add(ip+ (ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork?"/32":"/128")); }
+   if(bypass.Count>0) tun["route_exclude_address"]=bypass.Distinct().ToArray();
    return Json.Write(Obj("log",Obj("level","warn","timestamp",false),"dns",dns,
-    "inbounds",new object[]{Obj("type","tun","tag","tun-in","interface_name",InterfaceName,"address",new[]{"172.30.87.1/30","fd87:6c75:6e61::1/126"},"mtu",1500,"auto_route",true,"strict_route",true,"dns_mode","hijack","stack","mixed")},
+    "inbounds",new object[]{tun},
     "outbounds",new object[]{proxy,Obj("type","direct","tag","direct")},
     "route",Obj("auto_detect_interface",true,"default_domain_resolver","remote","rules",new object[]{Obj("port",53,"action","hijack-dns")},"final","proxy")));
   }
   public static Dictionary<string,object> BuildOutbound(Server s) {
-   Subscriptions.Validate(s); if(s.Transport=="xhttp") throw new SafeException("XHTTP требует локальный мост Xray.");
+   Subscriptions.Validate(s); if(s.Transport=="xhttp" || s.Transport=="httpupgrade" || s.Dialer!=null || s.GrpcMultiMode || s.GrpcAuthority!="" || s.GrpcUserAgent!="" || s.GrpcInitialWindow!=0) throw new SafeException("Сервер требует локальный мост Xray.");
    var proxy=Obj("type",s.Protocol=="ss"?"shadowsocks":s.Protocol,"tag","proxy","server",s.Host,"server_port",s.Port,"domain_resolver",Obj("server","bootstrap","strategy","prefer_ipv4"));
    if(s.Protocol=="vless" || s.Protocol=="vmess") proxy["uuid"]=s.Uuid; else proxy["password"]=s.Password;
+   if(s.Protocol=="tuic") {proxy["uuid"]=s.Uuid;proxy["congestion_control"]=s.CongestionControl;proxy["udp_relay_mode"]=s.UdpRelayMode;}
    if(s.Protocol=="vmess") { proxy["security"]=s.Cipher; proxy["alter_id"]=0; }
    if(s.Protocol=="ss") proxy["method"]=s.Method;
    if(s.Flow!="") proxy["flow"]=s.Flow;

@@ -6,6 +6,7 @@ namespace Luna {
   internal void Observe(string line) {
    if(string.IsNullOrEmpty(line)) return;
    string text=line.Length>4096?line.Substring(0,4096).ToLowerInvariant():line.ToLowerInvariant();
+   if(text.Contains("reality") && (text.Contains("received real certificate") || text.Contains("authentication failed") || text.Contains("invalid connection"))) { lock(gate) { category="ERROR_REALITY"; } return; }
    if(!text.Contains("fatal") && !text.Contains("panic:")) return;
    string code="ERROR_CORE";
    if(text.Contains("access is denied") || text.Contains("permission denied") || text.Contains("requires elevation")) code="ERROR_PERMISSION";
@@ -19,7 +20,7 @@ namespace Luna {
   internal static string Category(string status) {
    string[] parts=status.Split(':'); int number;
    if(parts.Length>2 || (parts.Length==2 && !int.TryParse(parts[1],out number))) return "ERROR_WORKER";
-   return new[]{"CONNECTING","SWITCHING","VERIFYING","CONNECTED","RETRYING","BLOCKED","STOPPED","ERROR_CORE","ERROR_CONFIG","ERROR_NETWORK","ERROR_WORKER","ERROR_TUN","ERROR_PERMISSION","ERROR_BIND","ERROR_DNS","ERROR_STOP"}.Contains(parts[0])?parts[0]:"ERROR_WORKER";
+   return new[]{"CONNECTING","SWITCHING","VERIFYING","CONNECTED","RETRYING","BLOCKED","STOPPED","ERROR_CORE","ERROR_CONFIG","ERROR_REALITY","ERROR_NETWORK","ERROR_WORKER","ERROR_TUN","ERROR_PERMISSION","ERROR_BIND","ERROR_DNS","ERROR_STOP"}.Contains(parts[0])?parts[0]:"ERROR_WORKER";
   }
   internal static string ExitSuffix(string status) { string[] p=status.Split(':'); int n; return p.Length==2 && int.TryParse(p[1],out n)?" Код выхода: "+n+".":""; }
  }

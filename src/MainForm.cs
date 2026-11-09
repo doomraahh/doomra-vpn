@@ -11,7 +11,7 @@ namespace Luna {
  public sealed partial class MainForm : Form {
   readonly string settingsPath=Path.Combine(Storage.Folder,"settings.dat");
   readonly bool transient;
-  float scale=1; bool headerOnline,dragging,resizing; string hot="",pressed=""; int focus,dragY,dragScroll;
+  float scale=1; bool headerOnline,dragging,inSizeMove,resizing; string hot="",pressed=""; int focus,dragY,dragScroll;
   Settings settings=new Settings(); readonly Diagnostics log=new Diagnostics();
   readonly Dictionary<Server,ServerCheckResult> checks=new Dictionary<Server,ServerCheckResult>();
   readonly UiAction connect=new UiAction("Подключить"),add=new UiAction("Профили"),check=new UiAction("Проверить все");
@@ -23,6 +23,7 @@ namespace Luna {
   int scrollTarget;
   readonly ToolTip nameTip=new ToolTip { InitialDelay=650,ReshowDelay=150,AutoPopDelay=10000,ShowAlways=true };
   string tipText="",editingId; TextBox subscriptionInput,profileInput; bool dropdown; long lastPoll;
+  double logoConfirmedAt=-1;
   readonly DashboardList servers=new DashboardList();
   bool loading,busy,closing,exiting,storageReady=true; string state="STOPPED";
   Connection connection; Task session,checking; CancellationTokenSource checkCancel; bool awaitingSwitch;
@@ -32,20 +33,25 @@ namespace Luna {
   MainForm(Settings initial,bool atLogin) {
    transient=initial!=null;
    using(var graphics=Graphics.FromHwnd(IntPtr.Zero)) scale=Math.Max(1,graphics.DpiX/96f);
-   Text="doomra VPN"; StartPosition=FormStartPosition.CenterScreen; Font=UiFonts.Native(11);
+   Text="VPN"; StartPosition=FormStartPosition.CenterScreen; Font=UiFonts.Native(11);
    FormBorderStyle=FormBorderStyle.None; AutoScaleMode=AutoScaleMode.None; MinimumSize=new Size((int)(900*scale),(int)(640*scale)); ClientSize=new Size((int)(1040*scale),(int)(720*scale)); KeyPreview=true;
    SetStyle(ControlStyles.UserPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.AllPaintingInWmPaint,true);
    using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Doomra.Icon")) if(stream!=null) using(var icon=new Icon(stream)) Icon=(Icon)icon.Clone();
    try { settings=initial??Storage.Load(settingsPath); } catch(SafeException e) { storageReady=false; Shown+=delegate { Error(e.Message); }; }
    ProfileStore.Initialize(settings); settings.Network=(settings.Network??new NetworkPolicy()).Snapshot(); ApplyTheme();
-   settings.SendDeviceId=true; settings.AutoReconnect=true; settings.SubscriptionFormat="Happ";
+   settings.SendDeviceId=true; settings.AutoReconnect=true;
    servers.SelectedChanged+=SelectServer;
    FillServers(); focus=Selected()==null?1:0;
    uiTimer.Interval=250; uiTimer.Tick+=delegate {
-    bool changed=motion.IsRunning,metricsChanged=false;
-    if(motion.IsRunning) { details.Angle=(float)LogoMotion.Angle(motion.Elapsed.TotalSeconds); details.Moving=motion.Elapsed.TotalSeconds<LogoMotion.Duration; if(!details.Moving) { motion.Stop(); uiTimer.Interval=250; } }
-    if(tickClock.ElapsedMilliseconds-lastPoll>=1000) { lastPoll=tickClock.ElapsedMilliseconds; meter.Poll(); details.Elapsed=meter.Elapsed; details.Download=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Received):"—"; details.Upload=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Sent):"—"; details.Speed=MetricText.Speed(meter.Traffic.ReceivedPerSecond,meter.Traffic.SentPerSecond); metricsChanged=true; }
-    if(!closing) { if(metricsChanged) Invalidate(); else if(changed && !details.SettingsPage) Invalidate(ConnectionPaintBounds); }
+    bool changed=motion.IsRunning,footerChanged=false,speedChanged=false;
+    if(changed) UpdateLogoMotion();
+    if(meter.Active && tickClock.ElapsedMilliseconds-lastPoll>=1000) {
+     lastPoll=tickClock.ElapsedMilliseconds; meter.Poll();
+     RefreshSessionMetrics(out footerChanged,out speedChanged);
+    }
+    if(closing || !Visible || WindowState==FormWindowState.Minimized || details.SettingsPage) return;
+    if(footerChanged) Invalidate(FooterPaintBounds);
+    if(changed || speedChanged) Invalidate(ConnectionPaintBounds);
    }; uiTimer.Start();
    scrollTimer.Tick+=delegate { AdvanceScroll(); };
    if(!transient) InitializeTray(atLogin);
@@ -68,7 +74,8 @@ namespace Luna {
   }
   void PositionInput() {
    if(subscriptionInput==null) return;
-   PlaceInput(subscriptionInput,LayoutNow.Input); PlaceInput(profileInput,LayoutNow.NameInput);
+   var field=LayoutNow.Input;field.Width-=88;
+   PlaceInput(subscriptionInput,field); PlaceInput(profileInput,LayoutNow.NameInput);
   }
   void PlaceInput(TextBox input,RectangleF r) { if(input!=null) input.SetBounds((int)((r.X+10)*scale),(int)((r.Y+10)*scale),(int)((r.Width-20)*scale),(int)((r.Height-16)*scale)); }
   TextBox MakeInput(string text,bool secret,int limit,string name,int tabFocus) {
@@ -86,6 +93,7 @@ namespace Luna {
   void ShowSettings() { HideSubscription(); details.SettingsPage=true; UpdateControls(); FocusAction("back",false); NotifyAccess(); Invalidate(); }
   void BackToMain() { details.SettingsPage=false; FocusAction("settings",true); NotifyAccess(); Invalidate(); }
   void ConfirmDelete() {
+   SetSubscriptionVisible(false);
    var profile=settings.Profiles.FirstOrDefault(p=>p.Id==editingId); if(profile==null) return;
    details.DeleteName=profile.Name; details.Menu="delete";
    if(profileInput!=null) profileInput.Visible=false; if(subscriptionInput!=null) subscriptionInput.Visible=false;
@@ -107,16 +115,32 @@ namespace Luna {
   }
   void ShowEditor(string id) {
    editingId=id; var profile=settings.Profiles.FirstOrDefault(p=>p.Id==id);
-   OpenMenu("editor"); details.NewProfile=profile==null; details.Notice=connection!=null?"Смена ссылки или обновление отключат VPN":"HTTPS-ссылка из личного кабинета";
+   OpenMenu("editor"); details.NewProfile=profile==null; details.Notice=connection!=null?"Смена ссылки или обновление отключат VPN":"HTTPS-подписка или прямая ссылка на сервер";
+   if(profile!=null && profile.LocalImport) details.Notice="Локальный профиль. Можно переименовать или заменить файлом / текстом.";
    profileInput=MakeInput(profile==null?"Профиль "+(settings.Profiles.Count+1):profile.Name,false,48,"Название профиля",13);
-   subscriptionInput=MakeInput(profile==null?"":profile.Subscription,true,8192,"HTTPS-ссылка подписки",9);
+   subscriptionInput=MakeInput(profile==null?"":profile.SourceUrl,true,8192,"Ссылка на сервер или подписку",9);
+   details.SubscriptionVisible=false;details.SubscriptionHasValue=subscriptionInput.Text.Length>0;
+   subscriptionInput.TextChanged+=delegate {details.SubscriptionHasValue=subscriptionInput.Text.Length>0;NotifyAccess();Invalidate();};
    PositionInput(); FocusAction("name",false);
   }
   void HideSubscription() {
+   details.SubscriptionVisible=false;details.SubscriptionHasValue=false;
    dropdown=details.Dropdown=false; details.Menu="";
    if(subscriptionInput!=null) { Controls.Remove(subscriptionInput); subscriptionInput.Dispose(); subscriptionInput=null; }
    if(profileInput!=null) { Controls.Remove(profileInput); profileInput.Dispose(); profileInput=null; }
    focus=1; Invalidate();
+  }
+  void SetSubscriptionVisible(bool visible) {
+   if(subscriptionInput==null) return;
+   int start=subscriptionInput.SelectionStart,length=subscriptionInput.SelectionLength;
+   subscriptionInput.PasswordChar=visible?'\0':'·';details.SubscriptionVisible=visible;
+   subscriptionInput.Select(start,length);NotifyAccess();Invalidate();
+  }
+  void CopySubscription(Action<string> write) {
+   if(subscriptionInput==null || subscriptionInput.Text.Length==0) return;
+   try {write(subscriptionInput.Text);details.Notice="Ссылка скопирована.";}
+   catch {details.Notice="Не удалось скопировать ссылку. Повторите попытку.";}
+   Invalidate();
   }
   string HitAction(PointF point) {
    var layout=LayoutNow;
@@ -130,6 +154,10 @@ namespace Luna {
     if(details.Menu=="delete" && layout.MenuSubmit(details.Menu,settings.Profiles.Count).Contains(point)) return "confirm-delete";
     if(details.Menu=="editor" && editingId!=null && layout.Delete.Contains(point)) return "delete";
     if(details.Menu=="editor" && layout.Submit.Contains(point)) return "save";
+    if(details.Menu=="editor" && layout.ImportFile.Contains(point)) return "import-file";
+    if(details.Menu=="editor" && layout.ImportText.Contains(point)) return "import-text";
+    if(details.Menu=="editor" && layout.SubscriptionEye.Contains(point)) return "toggle-subscription";
+    if(details.Menu=="editor" && layout.SubscriptionCopy.Contains(point)) return "copy-subscription";
 
     if(details.Menu=="profiles") {
      if(layout.MenuSubmit(details.Menu,settings.Profiles.Count).Contains(point)) return "new";
@@ -144,6 +172,7 @@ namespace Luna {
   }
   bool EnabledAction(string action) {
    if(closing) return false;
+   if(action=="toggle-subscription" || action=="copy-subscription") return dropdown && details.Menu=="editor" && !busy && subscriptionInput!=null && subscriptionInput.Text.Length>0;
    if(IsNetworkAction(action)) return NetworkActionEnabled(action);
    if(details.SettingsPage && action!="back" && action!="theme" && action!="close" && action!="min" && action!="max") return false;
    if(action=="delete" || action=="confirm-delete") return dropdown && !busy;
@@ -153,6 +182,7 @@ namespace Luna {
    if(action=="refresh-profile") return !dropdown && !busy && !closing && ProfileStore.Current(settings)!=null && !string.IsNullOrWhiteSpace(settings.Subscription);
    if(action=="settings") return true;
    if(action=="save" || action=="new" || action.StartsWith("profile:") || action.StartsWith("edit:")) return dropdown && !busy;
+   if(action=="import-file" || action=="import-text") return dropdown && details.Menu=="editor" && !busy;
    return true;
   }
   async void RunAction(string action) {
@@ -175,6 +205,9 @@ namespace Luna {
      else { await PrepareProfileChange(); if(closing) return; ProfileStore.Switch(settings,id); ResetSession(); checks.Clear(); HideSubscription(); Save(); FillServers(); }
     }
     else if(action=="save") await AddSubscription();
+    else if(action=="toggle-subscription") SetSubscriptionVisible(!details.SubscriptionVisible);
+    else if(action=="copy-subscription") CopySubscription(text=>Clipboard.SetText(text,TextDataFormat.UnicodeText));
+    else if(action=="import-file" || action=="import-text") await ShowLocalImport(action=="import-file");
     else if(action=="refresh-profile") await RefreshCurrentProfile();
     else if(action=="dismiss") { if(details.Menu=="delete") CancelDelete(); else HideSubscription(); }
     else if(action=="check") { if(checkCancel!=null) checkCancel.Cancel(); else await CheckAll(); }
@@ -185,12 +218,22 @@ namespace Luna {
   }
   async Task PrepareProfileChange() { busy=true; UpdateControls(); try { await Disconnect(); } finally { busy=false; if(!closing) UpdateControls(); } }
   void ResetSession() { meter.Reset(); details.Elapsed="00:00:00"; details.Upload=details.Download="—"; details.Speed=MetricText.Speed(null,null); }
+  void RefreshSessionMetrics(out bool footerChanged,out bool speedChanged) {
+   string elapsed=meter.Elapsed;
+   string download=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Received):"—";
+   string upload=meter.Traffic.Available?MetricText.Bytes(meter.Traffic.Sent):"—";
+   string speed=MetricText.Speed(meter.Traffic.ReceivedPerSecond,meter.Traffic.SentPerSecond);
+   footerChanged=details.Elapsed!=elapsed || details.Download!=download || details.Upload!=upload;
+   speedChanged=details.Speed!=speed;
+   details.Elapsed=elapsed; details.Download=download; details.Upload=upload; details.Speed=speed;
+  }
   protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); MaximizedBounds=Screen.FromControl(this).WorkingArea; }
   protected override void OnResizeBegin(EventArgs e) {
-   base.OnResizeBegin(e); resizing=true; scrollTimer.Stop(); UpdateWindowRegion();
+   base.OnResizeBegin(e); inSizeMove=true; scrollTimer.Stop();
   }
   protected override void OnResizeEnd(EventArgs e) {
-   base.OnResizeEnd(e); resizing=false; UpdateWindowRegion(); Invalidate();
+   base.OnResizeEnd(e); inSizeMove=false;
+   if(resizing) { resizing=false; UpdateWindowRegion(); Invalidate(); }
   }
   void UpdateWindowRegion() {
    var previous=Region;
@@ -203,10 +246,16 @@ namespace Luna {
   }
   protected override void OnResize(EventArgs e) {
    base.OnResize(e); if(servers!=null) { servers.Viewport=(int)LayoutNow.List.Height; servers.ScrollTo(servers.Scroll); }
-   if(!resizing) UpdateWindowRegion();
+   if(!resizing) { resizing=inSizeMove; UpdateWindowRegion(); }
    PositionInput(); Invalidate();
   }
   Rectangle ConnectionPaintBounds { get { var r=RectangleF.Inflate(LayoutNow.ConnectCard,2,2); return Rectangle.Ceiling(new RectangleF(r.X*scale,r.Y*scale,r.Width*scale,r.Height*scale)); } }
+  Rectangle FooterPaintBounds {
+   get {
+    var r=RectangleF.Inflate(LayoutNow.Footer,2,2);
+    return Rectangle.FromLTRB((int)Math.Floor(r.Left*scale),(int)Math.Floor(r.Top*scale),(int)Math.Ceiling(r.Right*scale),(int)Math.Ceiling(r.Bottom*scale));
+   }
+  }
   Rectangle ServerPaintBounds {
    get {
     var r=LayoutNow.List;
@@ -219,6 +268,7 @@ namespace Luna {
    if(resizing) Dashboard.DrawLive(e.Graphics,layout,servers,connect,add,check,state,headerOnline,hot,pressed,focus,WindowState==FormWindowState.Maximized,details);
    else if(!dropdown && !details.SettingsPage && ConnectionPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawConnection(e.Graphics,layout,connect,state,headerOnline,hot,pressed,focus,details);
    else if(!dropdown && !details.SettingsPage && ServerPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawServerViewport(e.Graphics,layout,servers,details.Light);
+   else if(!dropdown && !details.SettingsPage && FooterPaintBounds.Contains(e.ClipRectangle)) Dashboard.DrawSessionFooter(e.Graphics,layout,details,true);
    else Dashboard.Draw(e.Graphics,layout,servers,connect,add,check,state,headerOnline,hot,pressed,focus,WindowState==FormWindowState.Maximized,details);
    e.Graphics.Restore(saved);
   }
@@ -227,6 +277,8 @@ namespace Luna {
    if(dragging) { float thumb=Math.Max(24,layout.List.Height*layout.List.Height/Math.Max(1,servers.Items.Count*DashboardList.RowPitch)); servers.ScrollTo(dragScroll+(int)((point.Y-dragY)*servers.MaxScroll/Math.Max(1,layout.List.Height-thumb))); Invalidate(ServerPaintBounds); return; }
    string next=HitAction(point); int row=!dropdown && !details.SettingsPage && layout.List.Contains(point)?(int)((point.Y-layout.List.Y+servers.Scroll)/DashboardList.RowPitch):-1;
    string tip=next=="refresh-profile"?(connection!=null?"Обновить серверы профиля (отключит VPN)":"Обновить серверы профиля"):(next=="check"?check.Text:(next=="settings"?"Настройки":(next.StartsWith("edit:")?"Редактировать профиль":(!dropdown && row>=0 && row<servers.Items.Count?ServerTooltip(servers.Items[row]):(!dropdown && !details.SettingsPage && layout.SelectedCard.Contains(point) && Selected()!=null?Selected().Name:"")))));
+   if(next=="toggle-subscription") tip=details.SubscriptionVisible?"Скрыть ссылку":"Показать ссылку";
+   if(next=="copy-subscription") tip="Копировать ссылку";
    if(tip!=tipText) { tipText=tip; nameTip.SetToolTip(this,tip.Length==0?null:tip); }
    if(next!=hot || row!=servers.Hover) { hot=next; servers.Hover=row; Cursor=next!="" || (row>=0 && servers.CanChoose)?Cursors.Hand:Cursors.Default; Invalidate(); }
   }
@@ -276,7 +328,11 @@ namespace Luna {
    if(servers.Scroll==scrollTarget) scrollTimer.Stop();
   }
   static int FocusId(string action) {
+   if(action=="toggle-subscription") return 22; if(action=="copy-subscription") return 23;
+   if(action=="import-file") return 20; if(action=="import-text") return 21;
    if(action=="launch-at-login") return 27; if(action=="connect-at-login") return 28;
+   if(action=="split-apps") return 38;
+   if(action=="split-sites") return 39;
    if(action=="route-all") return 30; if(action=="route-include") return 31; if(action=="route-exclude") return 32; if(action=="app-add") return 33; if(action=="apps-prev") return 34; if(action=="apps-next") return 35; if(action=="kill") return 36; if(action=="network-recover") return 37; if(action.StartsWith("app-remove:")) { int i; return int.TryParse(action.Substring(11),out i)?40+i:-1; }
    if(action=="connect") return 0; if(action=="add") return 1; if(action=="check") return 2; if(action=="list") return 3;
    if(action=="back") return 17; if(action=="delete") return 18; if(action=="confirm-delete") return 19; if(action=="refresh-profile") return 16; if(action=="url") return 9; if(action=="save") return 10; if(action=="dismiss") return 11; if(action=="settings") return 12; if(action=="name") return 13; if(action=="new") return 14; if(action=="theme") return 15;
@@ -326,6 +382,7 @@ namespace Luna {
   }
   protected override void WndProc(ref Message m) {
    if(m.Msg==ShowMessage && ShowMessage!=0 && tray!=null) { ShowFromTray(); return; }
+   if(m.Msg==TaskbarButtonCreated && TaskbarButtonCreated!=0) { taskbarButtonReady=true; RefreshTaskbarBadge(); }
    if(m.Msg==0x84) {
     long raw=m.LParam.ToInt64(); var point=Logical(PointToClient(new Point((short)(raw&0xffff),(short)((raw>>16)&0xffff)))); float x=point.X,y=point.Y,w=ClientSize.Width/scale,h=ClientSize.Height/scale;
     if(WindowState==FormWindowState.Normal) { int hit=0; if(y<7) hit=x<7?13:(x>w-8?14:12); else if(y>h-8) hit=x<7?16:(x>w-8?17:15); else if(x<7) hit=10; else if(x>w-8) hit=11; if(hit!=0) { m.Result=(IntPtr)hit; return; } }
@@ -363,9 +420,13 @@ namespace Luna {
    if(dropdown) {
     if(details.Menu=="editor") {
      append("name","Название профиля",layout.NameInput,AccessibleRole.Text,true,profileInput);
-     append("url","HTTPS-ссылка подписки",layout.Input,AccessibleRole.Text,true,subscriptionInput);
+     append("url","Ссылка на сервер или подписку",layout.Input,AccessibleRole.Text,true,subscriptionInput);
+     append("toggle-subscription",details.SubscriptionVisible?"Скрыть ссылку":"Показать ссылку",layout.SubscriptionEye,AccessibleRole.CheckButton,true,null);
+     append("copy-subscription","Копировать ссылку",layout.SubscriptionCopy,AccessibleRole.PushButton,true,null);
      if(editingId!=null) append("delete","Удалить профиль",layout.Delete,AccessibleRole.PushButton,true,null);
      append("save","Сохранить профиль",layout.Submit,AccessibleRole.PushButton,true,null);
+     append("import-file","Импорт из файла",layout.ImportFile,AccessibleRole.PushButton,true,null);
+     append("import-text","Вставить текст подписки",layout.ImportText,AccessibleRole.PushButton,true,null);
 
     } else if(details.Menu=="delete") {
      append("confirm-delete","Подтвердить удаление профиля",layout.MenuSubmit(details.Menu,settings.Profiles.Count),AccessibleRole.PushButton,true,null);
@@ -397,7 +458,7 @@ namespace Luna {
   }
   string CheckDescription(Server server) {
    ServerCheckResult result;
-   return checks.TryGetValue(server,out result)?result.Text+(result.CheckedAt.HasValue?". Проверено "+result.TimeLabel:""):"Не проверен";
+   return checks.TryGetValue(server,out result)?result.Text+(result.LatencyMilliseconds.HasValue?". Задержка "+result.LatencyLabel:"")+(result.CheckedAt.HasValue?". Проверено "+result.TimeLabel:""):"Не проверен";
   }
   string ServerTooltip(Server server) { return server.Name+"\r\n"+CheckDescription(server); }
   Node ServerNode(int index) {
@@ -421,10 +482,12 @@ namespace Luna {
     if(current.Role==AccessibleRole.StaticText) return AccessibleStates.ReadOnly;
     var state=current.Enabled?AccessibleStates.Focusable:AccessibleStates.Unavailable;
     if(node.Id=="theme" && owner.settings.LightTheme) state|=AccessibleStates.Checked;
+    if(node.Id=="toggle-subscription" && owner.details.SubscriptionVisible) state|=AccessibleStates.Checked;
     if(node.Id=="launch-at-login" && owner.details.LaunchAtLogin) state|=AccessibleStates.Checked;
     if(node.Id=="connect-at-login" && owner.settings.ConnectAtLogin) state|=AccessibleStates.Checked;
     if(node.Id=="kill" && owner.settings.Network.KillSwitch) state|=AccessibleStates.Checked;
     if(node.Id.StartsWith("route-") && node.Id.Substring(6)==owner.settings.Network.Mode) state|=AccessibleStates.Checked;
+    if(node.Id==(owner.settings.Network.ByDomain?"split-sites":"split-apps")) state|=AccessibleStates.Checked;
     if(owner.ContainsFocus && FocusId(node.Id)==owner.focus) state|=AccessibleStates.Focused;
     if(node.Id.StartsWith("server:")) { int index=int.Parse(node.Id.Substring(7)); state|=AccessibleStates.Selectable; if(index==owner.servers.Selected) { state|=AccessibleStates.Selected; if(owner.focus==3 && owner.ContainsFocus) state|=AccessibleStates.Focused; } if(current.Bounds.IsEmpty) state|=AccessibleStates.Offscreen; }
     return state;
@@ -438,7 +501,7 @@ namespace Luna {
     owner.BeginInvoke((Action)(()=>{ if(!Current.Enabled) return; if(node.Id.StartsWith("server:")) { if(owner.servers.Enabled && !owner.dropdown) owner.servers.Choose(int.Parse(node.Id.Substring(7))); } else if(node.Id=="list") owner.FocusAction("list",true); else owner.RunAction(node.Id); }));
    }
   }
-  void Error(string text) { log.Add(text); MessageBox.Show(this,text,"doomra VPN",MessageBoxButtons.OK,MessageBoxIcon.Information); }
+  void Error(string text) { log.Add(text); MessageBox.Show(this,text,"VPN",MessageBoxButtons.OK,MessageBoxIcon.Information); }
   bool Save() {
    try { if(transient) { ProfileStore.Capture(settings); return true; } if(!storageReady) return false; Storage.Save(settingsPath,settings); return true; }
    catch { storageReady=false; Error("Не удалось сохранить защищённые настройки."); return false; }
@@ -450,8 +513,18 @@ namespace Luna {
    details.Network=settings.Network; details.NetworkEditAllowed=!busy && !closing && storageReady; details.NetworkSessionActive=connection!=null;
    details.Installed=installed; details.LaunchAtLogin=launchAtLogin; details.ConnectAtLogin=settings.ConnectAtLogin;
    bool wasOnline=headerOnline; headerOnline=UiState.IsOnline(state,connection!=null,connection!=null&&connection.Cancelled,closing);
-   if(headerOnline!=wasOnline) { if(wasOnline) meter.Poll(); meter.SetActive(headerOnline); if(headerOnline) meter.Poll(); details.Speed=MetricText.Speed(meter.Traffic.ReceivedPerSecond,meter.Traffic.SentPerSecond); }
+   UpdateLogoMotion();
+   if(headerOnline!=wasOnline) {
+    RefreshConnectionBadge();
+    if(wasOnline) meter.Poll();
+    meter.SetActive(headerOnline);
+    if(headerOnline) { meter.Poll(); lastPoll=tickClock.ElapsedMilliseconds; }
+    bool footerChanged,speedChanged;
+    RefreshSessionMetrics(out footerChanged,out speedChanged);
+   }
    details.Subscription=settings.SubscriptionInfo; var currentProfile=ProfileStore.Current(settings); details.ProfileName=currentProfile==null?"Нет профиля":currentProfile.Name;
+   details.DirectProfile=currentProfile!=null && currentProfile.DirectUrl.Length>0;
+   details.LocalProfile=currentProfile!=null && currentProfile.LocalImport;
    details.ProfileNames=settings.Profiles.Select(p=>p.Name).ToList(); details.ProfileIndex=settings.Profiles.FindIndex(p=>p.Id==settings.ActiveProfile);
    details.CanRefresh=EnabledAction("refresh-profile");
    add.Enabled=!busy && !closing; check.Enabled=!closing && (checkCancel!=null || (!busy && connection==null && settings.Servers.Count>0));
@@ -477,6 +550,22 @@ namespace Luna {
    }
    settings.Selected=index; Save(); UpdateControls(); NotifyAccess();
   }
+  void UpdateLogoMotion() {
+   bool pending=!closing && LogoMotion.IsPending(state);
+   if(pending && (!motion.IsRunning || logoConfirmedAt>=0)) {
+    motion.Restart(); logoConfirmedAt=-1;
+   }
+   double elapsed=motion.Elapsed.TotalSeconds;
+   if(headerOnline && motion.IsRunning && logoConfirmedAt<0) logoConfirmedAt=elapsed;
+   details.Moving=motion.IsRunning && (pending || headerOnline) && elapsed<LogoMotion.Duration;
+   details.Angle=details.Moving?(float)LogoMotion.Angle(elapsed):0;
+   details.WaitingArc=pending && !details.Moving;
+   details.ArcAngle=LogoMotion.ArcAngle(elapsed);
+   details.SuccessRing=headerOnline && motion.IsRunning && logoConfirmedAt>=0?LogoMotion.SuccessOpacity(elapsed,logoConfirmedAt):0;
+   if(!details.Moving && !details.WaitingArc && details.SuccessRing<=0) motion.Reset();
+   int interval=motion.IsRunning && Visible && WindowState!=FormWindowState.Minimized && !details.SettingsPage?(details.WaitingArc?33:16):250;
+   if(uiTimer.Interval!=interval) uiTimer.Interval=interval;
+  }
   void LoadSavedChecks() {
    checks.Clear();
    var profile=ProfileStore.Current(settings);
@@ -493,7 +582,7 @@ namespace Luna {
    checks[server]=result;
    var profile=ProfileStore.Current(settings);
    if(profile!=null && result.CheckedAt.HasValue)
-    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status=result.Text,UnixSeconds=result.CheckedAt.Value.ToUnixTimeSeconds() };
+    profile.Checks[server.CheckKey()]=new SavedServerCheck { Status=result.Text,UnixSeconds=result.CheckedAt.Value.ToUnixTimeSeconds(),LatencyMilliseconds=result.LatencyMilliseconds };
   }
   void FillServers() { scrollTimer.Stop(); loading=true; LoadSavedChecks(); servers.Assign(settings.Servers,checks,settings.Selected); loading=false; UpdateControls(); }
   Task AddSubscription() { return SaveProfile(); }
@@ -501,10 +590,47 @@ namespace Luna {
    if(busy || closing || subscriptionInput==null || profileInput==null) return;
    string address=subscriptionInput.Text.Trim(),name;
    try { name=ProfileStore.CleanName(profileInput.Text); } catch(SafeException e) { details.Notice=e.Message; profileInput.Focus(); Invalidate(); return; }
-   Uri uri; if(!Uri.TryCreate(address,UriKind.Absolute,out uri) || uri.Scheme!="https" || uri.UserInfo!="" || uri.Fragment!="") { details.Notice="Введите корректную HTTPS-ссылку"; subscriptionInput.Focus(); Invalidate(); return; }
    string targetId=editingId; var existing=settings.Profiles.FirstOrDefault(p=>p.Id==targetId);
-   if(existing!=null && existing.Subscription==address) { ProfileStore.Rename(settings,targetId,name); Save(); HideSubscription(); UpdateControls(); return; }
+   if(existing!=null && existing.SourceUrl==address && (address.Length>0 || existing.LocalImport)) { ProfileStore.Rename(settings,targetId,name); Save(); HideSubscription(); UpdateControls(); return; }
+   int separator=address.IndexOf("://",StringComparison.Ordinal);
+   string scheme=separator>0?address.Substring(0,separator).ToLowerInvariant():"";
+   if(new[]{"vless","vmess","trojan","ss","hysteria2","hy2","tuic","anytls"}.Contains(scheme)) {
+    Server server;
+    try { server=Subscriptions.ParseDirectServer(address); }
+    catch(SafeException e) { details.Notice=e.Message; subscriptionInput.Focus(); Invalidate(); return; }
+    await PrepareProfileChange();
+    if(closing) return;
+    try {
+     ProfileStore.Upsert(settings,targetId,name,"",null,new List<Server>{server},address);
+     checks.Clear(); ResetSession(); HideSubscription(); Save(); FillServers();
+    } catch(SafeException e) { Error(e.Message); }
+    return;
+   }
+   Uri uri;
+   if(scheme!="https" || !Uri.TryCreate(address,UriKind.Absolute,out uri) || uri.UserInfo!="" || uri.Fragment!="") {
+    details.Notice="Введите ссылку на сервер или HTTPS-подписку"; subscriptionInput.Focus(); Invalidate(); return;
+   }
    await DownloadProfile(targetId,name,address);
+  }
+  async Task ShowLocalImport(bool fromFile) {
+   SetSubscriptionVisible(false);
+   if(profileInput==null || busy || closing) return;
+   using(var dialog=new LocalImportDialog(profileInput.Text,connection!=null)) {
+    if(fromFile && !dialog.ChooseFile()) return;
+    if(dialog.ShowDialog(this)==DialogResult.OK) await ApplyLocalImport(dialog.ProfileName,dialog.Result);
+   }
+  }
+  async Task ApplyLocalImport(string name,ImportResult imported) {
+   if(busy || closing || imported==null || imported.Servers.Count==0) return;
+   string clean=ProfileStore.CleanName(name),targetId=editingId;
+   // Reject limits before changing an active connection or the saved profile.
+   var existing=settings.Profiles.FirstOrDefault(p=>p.Id==targetId);
+   if((targetId!=null && existing==null) || (existing==null && settings.Profiles.Count>=ProfileStore.MaximumProfiles)) throw new SafeException("Невозможно добавить профиль: проверьте список профилей и ограничение 24 профиля.");
+   if(settings.Profiles.Where(p=>p!=existing).Sum(p=>(long)p.Servers.Count)+imported.Servers.Count>ProfileStore.MaximumServers) throw new SafeException("Слишком много серверов во всех профилях.");
+   foreach(var server in imported.Servers) Subscriptions.Validate(server);
+   await PrepareProfileChange(); if(closing) return;
+   ProfileStore.Upsert(settings,targetId,clean,"",null,imported.Servers,"",true);
+   checks.Clear();ResetSession();HideSubscription();Save();FillServers();
   }
   Task RefreshCurrentProfile() {
    var profile=ProfileStore.Current(settings);
@@ -520,7 +646,6 @@ namespace Luna {
     var result=await Task.Run(()=>Subscriptions.Parse(download.Body)); if(closing) return;
     if(result.Servers.Count==0) { Error("Поддерживаемые серверы не найдены.\r\n"+string.Join("\r\n",result.Errors.Take(4))); return; }
     ProfileStore.Upsert(settings,targetId,name,address,download.Info,result.Servers); checks.Clear(); ResetSession(); Save(); FillServers();
-    if(result.Errors.Count>0) Error("Добавлено: "+result.Servers.Count+" · дубликатов: "+result.DuplicateCount+" · отклонено: "+result.Errors.Count+".\r\n"+string.Join("\r\n",result.Errors.Take(20)));
    } catch(SafeException e) { if(!closing) Error(e.Message); } catch { if(!closing) Error("Не удалось обновить подписку. Прежние профили сохранены."); }
    finally { busy=false; if(!closing) { add.Text="Профили"; UpdateControls(); } }
   }
@@ -551,7 +676,7 @@ namespace Luna {
   async Task Toggle() {
    if(connection!=null) { await Disconnect(); return; }
    if(busy || closing || Selected()==null) return;
-   HideSubscription(); ResetSession(); motion.Restart(); uiTimer.Interval=16; details.Moving=true; details.Angle=0;
+   HideSubscription(); ResetSession();
    var current=new Connection(); connection=current; state="CONNECTING"; UpdateControls();
    current.Status+=value=> { if(IsDisposed || Disposing) return; try { BeginInvoke((Action)(()=> {
     if(connection!=current || closing || current.Cancelled) return;
@@ -559,15 +684,22 @@ namespace Luna {
     if(awaitingSwitch && category!="SWITCHING" && !category.StartsWith("ERROR")) return;
     awaitingSwitch=false; state=category; UpdateControls();
     if(state=="CONNECTED" && Selected()!=null) {
-     RecordServerCheck(Selected(),new ServerCheckResult("Доступен",DateTimeOffset.Now));
-     if(storageReady) Save();
+     ServerCheckResult previous;
+     if(!checks.TryGetValue(Selected(),out previous) || !previous.LatencyMilliseconds.HasValue) {
+      RecordServerCheck(Selected(),new ServerCheckResult("Доступен",DateTimeOffset.Now));
+      if(storageReady) Save();
+     }
     }
     if(state=="BLOCKED") Error("Соединение потеряно. Kill switch блокирует трафик приложений, назначенных VPN. Нажмите «Отключить», чтобы вернуть обычный интернет.");
     if(state.StartsWith("ERROR") && !current.Cancelled) Error(FailureMessage(state)+CoreFailure.ExitSuffix(value));
    })); } catch {} };
    try { session=current.Start(Selected(),true,settings.Network.Snapshot()); await session; }
-   catch(SafeException e) { if(!current.Cancelled && !closing) Error(e.Message); }
-   catch { if(!current.Cancelled && !closing) Error("Не удалось запустить подключение."); }
+   catch(Exception e) {
+    if(!current.Cancelled && !closing) {
+     state="ERROR_CORE"; UpdateControls();
+     Error(e is SafeException?e.Message:"Не удалось запустить подключение.");
+    }
+   }
    finally { current.Dispose(); if(connection==current) connection=null; session=null; awaitingSwitch=false; state="STOPPED"; if(!closing) UpdateControls(); }
   }
   async Task Disconnect() { if(connection==null) return; state="STOPPING"; connection.Stop(); UpdateControls(); connect.Enabled=false; connect.Text="Отключение…"; try { if(session!=null) await session; } catch {} }
@@ -577,6 +709,7 @@ namespace Luna {
     case "ERROR_PERMISSION": return "Windows отказала в доступе. Для подключения нужны права администратора.";
     case "ERROR_DNS": return "Не удалось запустить DNS или разрешить адрес сервера.";
     case "ERROR_CONFIG": return "Ядро отклонило параметры сервера.";
+    case "ERROR_REALITY": return "REALITY не подтвердил сервер. Обновите профиль; проверьте ключ, short ID, SNI и время Windows.";
     case "ERROR_NETWORK": return "Соединение через сервер не прошло проверку.";
     case "ERROR_BIND": return "Нужный сетевой адрес уже занят.";
     case "ERROR_STOP": return "Ядро ещё завершает работу. Ожидайте остановки.";

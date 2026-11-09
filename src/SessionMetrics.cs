@@ -68,6 +68,12 @@ namespace Luna {
  internal static class LogoMotion {
   internal const double Duration=.8;
   internal static double Angle(double seconds) { double t=Math.Max(0,Math.Min(1,seconds/Duration)); return 360*(t*t*t*(t*(t*6-15)+10)); }
+  internal static bool IsPending(string state) { return state=="CONNECTING" || state=="VERIFYING" || state=="SWITCHING" || state=="RETRYING"; }
+  internal static float ArcAngle(double seconds) { return (float)(((Math.Max(0,seconds-Duration)/1.8)%1)*360-90); }
+  internal static float SuccessOpacity(double seconds,double confirmedAt) {
+   double elapsed=seconds-Math.Max(Duration,confirmedAt);
+   return elapsed<0?0:(float)Math.Max(0,1-elapsed/.42);
+  }
  }
  internal static class MetricText {
   internal static string Expiry(SubscriptionInfo info) {
@@ -103,34 +109,38 @@ namespace Luna {
  internal sealed class ServerCheckResult {
   internal readonly string Text;
   internal readonly DateTimeOffset? CheckedAt;
-  internal ServerCheckResult(string text,DateTimeOffset? checkedAt=null) { Text=text; CheckedAt=checkedAt; }
+  internal readonly int? LatencyMilliseconds;
+  internal ServerCheckResult(string text,DateTimeOffset? checkedAt=null,int? latencyMilliseconds=null) { Text=text; CheckedAt=checkedAt; LatencyMilliseconds=latencyMilliseconds; }
+  internal string LatencyLabel { get { return LatencyMilliseconds.HasValue?LatencyMilliseconds.Value.ToString(CultureInfo.InvariantCulture)+" мс":"—"; } }
   internal string TimeLabel { get { return CheckedAt.HasValue?CheckedAt.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm",CultureInfo.InvariantCulture):""; } }
   internal string CompactTimeLabel { get { return CheckedAt.HasValue?CheckedAt.Value.ToLocalTime().ToString("dd.MM · HH:mm",CultureInfo.InvariantCulture):""; } }
  }
  public sealed class SavedServerCheck {
   public string Status;
   public long UnixSeconds;
+  public int? LatencyMilliseconds;
   internal ServerCheckResult Read() {
    if(Status!="Доступен" && Status!="Нет ответа" && Status!="Ошибка проверки") return null;
-   try { return new ServerCheckResult(Status,DateTimeOffset.FromUnixTimeSeconds(UnixSeconds)); }
+   try { return new ServerCheckResult(Status,DateTimeOffset.FromUnixTimeSeconds(UnixSeconds),Status=="Доступен" && LatencyMilliseconds>0?LatencyMilliseconds:null); }
    catch(ArgumentOutOfRangeException) { return null; }
   }
  }
  internal static class ProbeQueue {
-  internal static Task Run(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,ServerCheckResult> progress,CancellationToken token,int concurrency=1) {
+  internal static Task Run(IList<Server> servers,Func<Server,CancellationToken,Task<int?>> probe,Action<int,ServerCheckResult> progress,CancellationToken token,int concurrency=1) {
    int next=-1;
    var lanes=new List<Task>();
    for(int lane=0;lane<Math.Min(concurrency,servers.Count);lane++)
     lanes.Add(RunLane(servers,probe,progress,()=>Interlocked.Increment(ref next),token));
    return Task.WhenAll(lanes);
   }
-  static async Task RunLane(IList<Server> servers,Func<Server,CancellationToken,Task<bool>> probe,Action<int,ServerCheckResult> progress,Func<int> next,CancellationToken token) {
+  static async Task RunLane(IList<Server> servers,Func<Server,CancellationToken,Task<int?>> probe,Action<int,ServerCheckResult> progress,Func<int> next,CancellationToken token) {
    for(int i=next();i<servers.Count;i=next()) {
     token.ThrowIfCancellationRequested(); progress(i,new ServerCheckResult("Проверка…")); string result;
-    try { result=await probe(servers[i],token)?"Доступен":"Нет ответа"; }
+    int? latency=null;
+    try { latency=await probe(servers[i],token); result=latency.HasValue?"Доступен":"Нет ответа"; }
     catch(OperationCanceledException) { token.ThrowIfCancellationRequested(); result="Нет ответа"; }
     catch { result="Ошибка проверки"; }
-    token.ThrowIfCancellationRequested(); progress(i,new ServerCheckResult(result,DateTimeOffset.Now));
+    token.ThrowIfCancellationRequested(); progress(i,new ServerCheckResult(result,DateTimeOffset.Now,latency));
    }
   }
  }

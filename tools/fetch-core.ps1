@@ -1,6 +1,7 @@
+param([string]$OutputDirectory='dist-v0.59')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-New-Item -ItemType Directory -Force cache,dist | Out-Null
+New-Item -ItemType Directory -Force cache,$OutputDirectory | Out-Null
 $version = '1.14.4'
 $expectedArchive = '99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df'
 $expectedExe = '8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9'
@@ -11,5 +12,5 @@ if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant
 Expand-Archive -LiteralPath $archive -DestinationPath cache/core -Force
 $core = Join-Path $PWD "cache/core/sing-box-$version-windows-amd64/sing-box.exe"
 if ((Get-FileHash -LiteralPath $core -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedExe) { throw 'Executable SHA-256 mismatch' }
-Copy-Item -LiteralPath $core -Destination dist/sing-box.exe -Force
+Copy-Item -LiteralPath $core -Destination (Join-Path $OutputDirectory 'sing-box.exe') -Force
 Write-Output "Official sing-box $version installed; SHA-256 verified."
